@@ -8,15 +8,21 @@ from pathlib import Path
 
 
 PYTHON = sys.executable
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    run_env = dict(env or os.environ)
+    old_pythonpath = run_env.get("PYTHONPATH")
+    run_env["PYTHONPATH"] = (
+        str(REPO_ROOT) if not old_pythonpath else str(REPO_ROOT) + os.pathsep + old_pythonpath
+    )
     return subprocess.run(
         [PYTHON, "-m", "graphify"] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
-        env=env,
+        env=run_env,
     )
 
 

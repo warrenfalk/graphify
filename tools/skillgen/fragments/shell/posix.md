@@ -1,9 +1,8 @@
 ```bash
 # If a graphify command is already installed, treat it as the source of truth.
 # Nix-installed graphify is self-contained; use `graphify doctor` to inspect the
-# package and `graphify extract INPUT_PATH --local-only --no-viz` for keyless
-# local graphs. Do not use system Python, pip, or uv for normal installed-package
-# operation.
+# package and `graphify extract INPUT_PATH --local-only --no-viz` for keyless local graphs.
+# do not use system Python, pip, or uv for normal installed-package operation.
 
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
 PYTHON=""
