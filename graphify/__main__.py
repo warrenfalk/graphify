@@ -2198,6 +2198,7 @@ def main() -> None:
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
+        print("  doctor [--json]        report runtime, Nix, dependency, credential, and graph diagnostics")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
@@ -2270,6 +2271,26 @@ def main() -> None:
         return
 
     cmd = sys.argv[1]
+
+    if cmd == "doctor":
+        json_mode = False
+        for arg in sys.argv[2:]:
+            if arg == "--json":
+                json_mode = True
+            elif arg in ("-h", "--help", "-?"):
+                print("Usage: graphify doctor [--json]")
+                return
+            else:
+                print(f"error: unknown doctor option: {arg}", file=sys.stderr)
+                sys.exit(2)
+        from graphify.doctor import collect, render_text
+
+        data = collect(_GRAPHIFY_OUT)
+        if json_mode:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            print(render_text(data), end="")
+        return
 
     # Universal help guard: -h/--help/-? anywhere after the command shows help
     # and stops — prevents flags from silently triggering destructive subcommands
