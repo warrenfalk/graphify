@@ -285,6 +285,23 @@ def test_codex_dispatch_is_agenttask_and_collects_in_memory():
     assert "Agent tool call 1" not in b2
 
 
+def test_codex_skill_distinguishes_standalone_cli_from_skill_subagents():
+    core, _ = _platform_artifacts("codex")
+    assert "Standalone CLI" in core
+    assert "provider credentials" in core
+    assert "Codex skill" in core
+    assert "spawn_agent" in core
+    assert "without separate graphify API keys" in core
+
+
+def test_codex_skill_is_cli_first_for_installed_nix_commands():
+    core, _ = _platform_artifacts("codex")
+    assert "Nix-installed graphify is self-contained" in core
+    assert "graphify doctor" in core
+    assert "graphify extract INPUT_PATH --local-only --no-viz" in core
+    assert "do not use system Python, pip, or uv for normal installed-package operation" in core
+
+
 def test_codex_and_windows_unify_enum_to_six_values():
     """codex (was 4-value) and windows (was 5-value) now carry the superset."""
     for key in ("codex", "windows"):

@@ -197,4 +197,80 @@ def test_extract_without_key_still_errors_when_docs_present(
     err = capsys.readouterr().err
     assert "no LLM API key found" in err
     assert "code-only corpus needs no key" in err
+    assert "Standalone CLI" in err
+    assert "Codex skill" in err
     assert not (out_dir / "graphify-out" / "graph.json").exists()
+
+
+def test_extract_accepts_no_viz_as_compatibility_noop(monkeypatch, tmp_path):
+    corpus = _code_only_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir), "--no-viz"],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert (out_dir / "graphify-out" / "graph.json").exists()
+
+
+def test_extract_unknown_flag_fails(monkeypatch, tmp_path, capsys):
+    corpus = _code_only_corpus(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--definitely-unknown"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    assert "unknown extract option" in capsys.readouterr().err
+
+
+def test_extract_local_only_mixed_corpus_succeeds_without_key(
+    monkeypatch, tmp_path, capsys
+):
+    corpus = _make_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "extract",
+            str(corpus),
+            "--out",
+            str(out_dir),
+            "--local-only",
+            "--no-viz",
+        ],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    graphify_out = out_dir / "graphify-out"
+    assert (graphify_out / "graph.json").exists()
+    assert (graphify_out / "needs_update").exists()
+    pending = graphify_out / ".graphify_semantic_pending.json"
+    assert pending.exists(), "local-only should record skipped semantic files"
+    pending_data = __import__("json").loads(pending.read_text(encoding="utf-8"))
+    assert any("README.md" in p for p in pending_data["files"])
+    out = capsys.readouterr().out
+    assert "local-only" in out
+    assert "semantic extraction pending" in out

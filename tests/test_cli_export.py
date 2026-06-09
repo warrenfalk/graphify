@@ -265,6 +265,24 @@ def test_update_no_cluster_writes_raw_graph(tmp_path):
     assert all("community" not in node for node in data["nodes"])
 
 
+def test_update_no_viz_clusters_and_removes_stale_html(tmp_path):
+    src = tmp_path / "sample.py"
+    src.write_text("def f():\n    return 1\n", encoding="utf-8")
+
+    first = _run(["update", "."], tmp_path)
+    assert first.returncode == 0, first.stderr
+    html = tmp_path / "graphify-out" / "graph.html"
+    assert html.exists(), "baseline update should generate graph.html"
+
+    src.write_text("def f():\n    return 1\n\ndef g():\n    return f()\n", encoding="utf-8")
+    second = _run(["update", ".", "--no-viz"], tmp_path)
+
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / "graphify-out" / "graph.json").exists()
+    assert (tmp_path / "graphify-out" / "GRAPH_REPORT.md").exists()
+    assert not html.exists(), "update --no-viz must remove stale graph.html"
+
+
 # Regression test for #934 - cluster-only crashes when graphify-out/ doesn't exist
 
 def test_cluster_only_creates_output_dir_when_missing(tmp_path):
@@ -286,6 +304,76 @@ def test_cluster_only_creates_output_dir_when_missing(tmp_path):
     r = _run(["cluster-only", ".", "--graph", str(graph_src), "--no-viz"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "graphify-out" / "GRAPH_REPORT.md").exists()
+
+
+def test_cluster_only_shrink_refusal_leaves_artifacts_untouched(tmp_path):
+    out = _make_graph(tmp_path)
+    graph_path = out / "graph.json"
+    report_path = out / "GRAPH_REPORT.md"
+    labels_path = out / ".graphify_labels.json"
+    report_path.write_text("original report\n", encoding="utf-8")
+    labels_path.write_text(json.dumps({"0": "Original Labels"}), encoding="utf-8")
+    original_graph = graph_path.read_text(encoding="utf-8")
+    original_report = report_path.read_text(encoding="utf-8")
+    original_labels = labels_path.read_text(encoding="utf-8")
+
+    smaller = tmp_path / "smaller.json"
+    smaller.write_text(
+        json.dumps(
+            {
+                "directed": False,
+                "multigraph": False,
+                "nodes": [{"id": "solo", "label": "Solo", "file_type": "code"}],
+                "links": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    r = _run(["cluster-only", ".", "--graph", str(smaller), "--no-viz"], tmp_path)
+
+    assert r.returncode != 0
+    assert "Refusing to overwrite" in r.stderr
+    assert graph_path.read_text(encoding="utf-8") == original_graph
+    assert report_path.read_text(encoding="utf-8") == original_report
+    assert labels_path.read_text(encoding="utf-8") == original_labels
+
+
+def test_cluster_only_force_allows_shrink_and_writes_matching_artifacts(tmp_path):
+    out = _make_graph(tmp_path)
+    smaller = tmp_path / "smaller.json"
+    smaller.write_text(
+        json.dumps(
+            {
+                "directed": False,
+                "multigraph": False,
+                "nodes": [{"id": "solo", "label": "Solo", "file_type": "code"}],
+                "links": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    r = _run(
+        ["cluster-only", ".", "--graph", str(smaller), "--force", "--no-viz"],
+        tmp_path,
+    )
+
+    assert r.returncode == 0, r.stderr
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    report = (out / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert len(graph["nodes"]) == 1
+    actual_cids = {str(n["community"]) for n in graph["nodes"]}
+    assert actual_cids == set(labels)
+    assert "1 nodes" in report
+
+
+def test_cluster_only_unknown_flag_fails(tmp_path):
+    _make_graph(tmp_path)
+    r = _run(["cluster-only", ".", "--surprise-me"], tmp_path)
+    assert r.returncode != 0
+    assert "unknown cluster-only option" in r.stderr
 
 
 # Regression test for #1027 - cluster-only must remap labels via node overlap
