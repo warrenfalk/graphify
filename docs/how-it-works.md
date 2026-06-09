@@ -9,11 +9,13 @@ Tree-sitter parses your code files and extracts classes, functions, imports, cal
 
 Code files are not sent to the LLM semantic extractor in the normal pipeline. If a corpus contains only code files, Pass 3 is skipped entirely; semantic extraction is reserved for docs, papers, images, and transcripts.
 
+More generally, files with deterministic extractors are AST-supported files. `graphify extract --local-only` / `--no-semantic` builds a graph from those AST-supported files, skips uncached semantic LLM work, and records docs, papers, images, or transcripts that still need semantic extraction.
+
 **Pass 2 — Video and audio (local, no API calls)**
 Video and audio files are transcribed with faster-whisper. To focus the transcript on your domain, the transcription prompt is seeded with your top god nodes (the most-connected concepts in your code graph so far). Transcripts are cached — re-runs skip already-processed files.
 
-**Pass 3 — Docs, papers, images (Claude subagents, costs tokens)**
-Claude runs in parallel over markdown, PDFs, images, and transcripts. Each subagent reads a batch of files and outputs a JSON fragment: nodes, edges, and any group relationships. The fragments are merged into a single graph.
+**Pass 3 — Docs, papers, images (semantic extraction, costs tokens)**
+When graphify runs as an assistant skill, the host session can dispatch subagents over markdown, PDFs, images, and transcripts. The standalone CLI cannot call those subagents; `graphify extract` uses installed backend SDKs plus provider credentials instead. Each batch produces a JSON fragment: nodes, edges, and any group relationships. The fragments are merged into a single graph.
 
 Before Pass 3, optional converters turn supported pointer/binary formats into
 Markdown sidecars under `graphify-out/converted/`. Office files (`.docx`,
@@ -85,7 +87,7 @@ Every extracted file is fingerprinted by content hash. Re-runs skip unchanged fi
 The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `id` — stable identifier
 - `label` — human-readable name
-- `file_type` — `code`, `document`, `paper`, `image`, `rationale`
+- `file_type` — `code`, `document`, `paper`, `image`, `rationale`, `concept`
 - `source_file` — where it came from
 
 Each edge has:

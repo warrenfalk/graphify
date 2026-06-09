@@ -90,6 +90,20 @@ pipx install graphifyy
 pip install graphifyy  # may need PATH setup — see note below
 ```
 
+**Nix:**
+
+```bash
+nix profile install github:safishamsi/graphify#graphify
+graphify doctor
+```
+
+The default Nix package is the practical, hermetic CLI: it uses Nix-store
+Python, includes the common semantic backend SDKs (`openai`, `anthropic`,
+`boto3`, `tiktoken`) and runtime helpers such as `git`, and does not require
+system Python, `pip`, or `uv` for normal operation. The smaller
+`#graphify-core` output remains available when you only want the AST-supported
+core.
+
 **Step 2 — register the skill with your AI assistant:**
 
 ```bash
@@ -391,7 +405,7 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 
 ## Environment variables
 
-These are only needed for **headless / CI extraction** (`graphify extract`). When running via the `/graphify` skill inside your IDE, the model API is provided by your IDE session — no extra keys needed.
+These are only needed for **standalone CLI / CI extraction** (`graphify extract`). The standalone CLI uses installed backend SDKs plus provider credentials; it cannot call Codex subagents. When running via the `/graphify` or Codex `$graphify` skill inside your IDE, semantic extraction can use the host session/subagents — no separate graphify API key is needed for that skill workflow.
 
 | Variable | Used for | When required |
 |---|---|---|
@@ -424,9 +438,10 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 ## Privacy
 
-- **Code files** — processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key — `graphify extract` runs fully offline.
+- **AST-supported files** — processed locally via deterministic extractors. Nothing leaves your machine. A corpus containing only AST-supported files requires no API key — `graphify extract` runs fully offline.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction when using the skill workflow, or to the selected provider when using standalone `graphify extract`. Standalone semantic extraction requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Keyless local mode** — `graphify extract . --local-only --no-viz` builds the local AST-supported graph, skips uncached semantic LLM extraction, and records the skipped files as pending. Use `graphify update . --no-viz` for no-key maintenance of an existing graph.
 - **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
 - No telemetry, no usage tracking, no analytics.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
@@ -467,6 +482,14 @@ Skip HTML generation and use the JSON directly:
 ```bash
 graphify cluster-only ./my-project --no-viz
 graphify query "..."
+```
+
+**No API key, but you still want a useful local graph**
+Use local-only extraction. It writes graph/report JSON from AST-supported files
+and marks uncached semantic files pending:
+```bash
+graphify extract . --local-only --no-viz
+graphify doctor
 ```
 
 **`graph.json` has conflict markers after two devs commit at once**
@@ -528,7 +551,7 @@ graphify claude install            # CLAUDE.md + PreToolUse hook (Claude Code)
 graphify claude uninstall
 graphify codebuddy install         # CODEBUDDY.md + PreToolUse hook (CodeBuddy)
 graphify codebuddy uninstall
-graphify codex install             # AGENTS.md + PreToolUse hook in .codex/hooks.json (Codex)
+graphify codex install             # AGENTS.md (Codex)
 graphify opencode install          # AGENTS.md + tool.execute.before plugin (OpenCode)
 graphify kilo install              # native Kilo skill + /graphify command + AGENTS.md + .kilo plugin
 graphify kilo uninstall
@@ -577,6 +600,8 @@ graphify extract ./docs --max-concurrency 2    # fewer parallel LLM calls (usefu
 graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow local models (default 600s)
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
+graphify extract ./docs --local-only --no-viz  # keyless local AST-supported graph; semantic work remains pending
+graphify extract ./docs --no-viz               # accepted compatibility flag; extract writes no HTML
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
@@ -605,12 +630,16 @@ GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend fo
 graphify clone https://github.com/karpathy/nanoGPT
 graphify merge-graphs a.json b.json --out merged.json
 graphify --version                                    # print installed version
+graphify doctor                                       # runtime/Nix/dependency/credential diagnostics
+graphify doctor --json                                # machine-readable diagnostics
 graphify watch ./src
 graphify check-update ./src
 graphify update ./src
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
+graphify update ./src --no-viz      # skip HTML and remove stale graph.html
 graphify cluster-only ./my-project
+graphify cluster-only ./my-project --force                     # allow intentional shrink
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
