@@ -205,13 +205,7 @@
 
       treeSitterGrammarPackages = map buildTreeSitterWheel treeSitterGrammarSpecs;
 
-      graphifyy = py.buildPythonApplication rec {
-        pname = "graphifyy";
-        version = "0.8.35";
-        pyproject = true;
-        src = ./.;
-        build-system = [ py.setuptools ];
-        dependencies =
+      coreDependencies =
           [
             datasketch
           ]
@@ -221,14 +215,62 @@
             tree-sitter
           ])
           ++ treeSitterGrammarPackages;
-        doCheck = false;
-        pythonImportsCheck = [ "graphify" ];
-        meta = {
-          description = "Turn a project into a queryable knowledge graph";
-          homepage = "https://github.com/safishamsi/graphify";
-          license = lib.licenses.mit;
-          mainProgram = "graphify";
+
+      commonRuntimeDependencies = with py; [
+        anthropic
+        boto3
+        markdownify
+        openai
+        openpyxl
+        pypdf
+        psycopg
+        tiktoken
+        watchdog
+        py."python-docx"
+      ];
+
+      runtimeTools = [
+        pkgs.git
+      ];
+
+      mkGraphifyy =
+        {
+          pname ? "graphifyy",
+          extraDependencies ? [ ],
+          nativeBuildInputs ? [ ],
+          postFixup ? "",
+        }:
+        py.buildPythonApplication rec {
+          inherit pname;
+          version = "0.8.35";
+          pyproject = true;
+          src = ./.;
+          build-system = [ py.setuptools ];
+          dependencies = coreDependencies ++ extraDependencies;
+          inherit nativeBuildInputs postFixup;
+          doCheck = false;
+          pythonImportsCheck = [ "graphify" ];
+          meta = {
+            description = "Turn a project into a queryable knowledge graph";
+            homepage = "https://github.com/safishamsi/graphify";
+            license = lib.licenses.mit;
+            mainProgram = "graphify";
+          };
         };
+
+      graphifyyCore = mkGraphifyy {
+        pname = "graphifyy-core";
+      };
+
+      graphifyy = mkGraphifyy {
+        pname = "graphifyy";
+        extraDependencies = commonRuntimeDependencies;
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postFixup = ''
+          wrapProgram $out/bin/graphify \
+            --set PYTHONNOUSERSITE 1 \
+            --prefix PATH : ${lib.makeBinPath runtimeTools}
+        '';
       };
     in
     {
@@ -236,6 +278,8 @@
         default = graphifyy;
         graphifyy = graphifyy;
         graphify = graphifyy;
+        graphifyy-core = graphifyyCore;
+        graphify-core = graphifyyCore;
       };
 
       apps.${system} = {
