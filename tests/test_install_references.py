@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -74,6 +75,20 @@ def _install(tmp_path, platform):
         os.chdir(old_cwd)
 
 
+def _chmod_tree(path: Path, *, dir_mode: int, file_mode: int) -> None:
+    for root, dirs, files in os.walk(path):
+        root_path = Path(root)
+        root_path.chmod(dir_mode)
+        for name in dirs:
+            (root_path / name).chmod(dir_mode)
+        for name in files:
+            (root_path / name).chmod(file_mode)
+
+
+def _owner_writable(path: Path) -> bool:
+    return bool(path.stat().st_mode & stat.S_IWUSR)
+
+
 def test_install_stages_references_sidecar(tmp_path, fake_bundle):
     """A progressive platform install drops references/ alongside SKILL.md."""
     platform = fake_bundle
@@ -116,6 +131,40 @@ def test_reinstall_replaces_references_atomically(tmp_path, fake_bundle):
     assert (refs / "extraction-spec.md").exists()
     assert (refs / "query.md").exists()
     assert not (skill_dir / "references.tmp").exists()
+
+
+def test_reinstall_repairs_nix_store_read_only_modes(tmp_path, fake_bundle):
+    """Nix-store-style read-only source modes must not brick reinstall."""
+    platform = fake_bundle
+    refs_src = mainmod._packaged_skill_refs_dir(platform)
+    assert refs_src is not None
+
+    try:
+        _chmod_tree(refs_src, dir_mode=0o555, file_mode=0o444)
+        _install(tmp_path, platform)
+    finally:
+        _chmod_tree(refs_src, dir_mode=0o755, file_mode=0o644)
+
+    skill_dir = tmp_path / ".claude" / "skills" / "graphify"
+    refs = skill_dir / "references"
+    skill = skill_dir / "SKILL.md"
+    version = skill_dir / ".graphify_version"
+    assert _owner_writable(skill)
+    assert _owner_writable(version)
+    assert _owner_writable(refs)
+    assert _owner_writable(refs / "query.md")
+
+    _chmod_tree(refs, dir_mode=0o555, file_mode=0o444)
+    skill.chmod(0o444)
+    version.chmod(0o444)
+
+    _install(tmp_path, platform)
+
+    assert _owner_writable(skill)
+    assert _owner_writable(version)
+    assert _owner_writable(refs)
+    assert _owner_writable(refs / "query.md")
+    assert (refs / "extraction-spec.md").exists()
 
 
 def test_uninstall_removes_references_then_walks_dirs(tmp_path, fake_bundle):

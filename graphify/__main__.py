@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -104,6 +105,70 @@ def _atomic_write_text(path: Path, text: str) -> None:
             pass
 
 
+def _ensure_owner_writable(path: Path) -> None:
+    """Clear a copied read-only bit on an installed file or directory."""
+    if path.is_symlink():
+        return
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return
+    if not mode & stat.S_IWUSR:
+        path.chmod(mode | stat.S_IWUSR)
+
+
+def _ensure_tree_owner_writable(path: Path) -> None:
+    """Make an installed tree removable even if copied from the Nix store."""
+    if not path.exists():
+        return
+    if not path.is_dir():
+        _ensure_owner_writable(path)
+        return
+    for root, dirs, files in os.walk(path):
+        root_path = Path(root)
+        _ensure_owner_writable(root_path)
+        for name in dirs:
+            _ensure_owner_writable(root_path / name)
+        for name in files:
+            _ensure_owner_writable(root_path / name)
+
+
+def _remove_installed_tree(path: Path, *, ignore_errors: bool = False) -> None:
+    try:
+        _ensure_tree_owner_writable(path)
+    except OSError:
+        if not ignore_errors:
+            raise
+    shutil.rmtree(path, ignore_errors=ignore_errors)
+
+
+def _copy_packaged_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dst = dst.with_suffix(dst.suffix + ".tmp")
+    if tmp_dst.exists():
+        _ensure_owner_writable(tmp_dst)
+        tmp_dst.unlink()
+    try:
+        shutil.copy(src, tmp_dst)
+        _ensure_owner_writable(tmp_dst)
+        os.replace(tmp_dst, dst)
+    except Exception:
+        try:
+            _ensure_owner_writable(tmp_dst)
+            tmp_dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _write_version_stamp(skill_dir: Path) -> None:
+    version_file = skill_dir / ".graphify_version"
+    if version_file.exists():
+        _ensure_owner_writable(version_file)
+    version_file.write_text(__version__, encoding="utf-8")
+    _ensure_owner_writable(version_file)
+
+
 def _check_skill_version(skill_dst: Path) -> None:
     """Warn if the installed skill is from an older graphify version."""
     version_file = skill_dst.parent / ".graphify_version"
@@ -134,9 +199,8 @@ def _refresh_all_version_stamps() -> None:
     """
     for name in _PLATFORM_CONFIG:
         skill_dst = _platform_skill_destination(name)
-        vf = skill_dst.parent / ".graphify_version"
         if skill_dst.exists():
-            vf.write_text(__version__, encoding="utf-8")
+            _write_version_stamp(skill_dst.parent)
 
 
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
@@ -223,15 +287,16 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
     refs_dst = skill_dst.parent / "references"
     refs_staged = skill_dst.parent / "references.tmp"
     if refs_staged.exists():
-        shutil.rmtree(refs_staged)
+        _remove_installed_tree(refs_staged)
     try:
         shutil.copytree(refs_src, refs_staged)
+        _ensure_tree_owner_writable(refs_staged)
         if refs_dst.exists():
-            shutil.rmtree(refs_dst)
+            _remove_installed_tree(refs_dst)
         os.replace(refs_staged, refs_dst)
     except Exception:
         if refs_staged.exists():
-            shutil.rmtree(refs_staged, ignore_errors=True)
+            _remove_installed_tree(refs_staged, ignore_errors=True)
         raise
 
 
@@ -275,21 +340,11 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         # Monolith (or progressive-with-no-refs): clear any orphan references/.
         orphan_refs = skill_dst.parent / "references"
         if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
+            _remove_installed_tree(orphan_refs)
 
     # SKILL.md last (crash-safety), via an atomic temp + rename.
-    tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
-    try:
-        shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
-    except Exception:
-        try:
-            tmp_dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-    (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
+    _copy_packaged_file(skill_src, skill_dst)
+    _write_version_stamp(skill_dst.parent)
     print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
 
@@ -299,16 +354,18 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     removed = False
     if skill_dst.exists():
+        _ensure_owner_writable(skill_dst)
         skill_dst.unlink()
         print(f"  skill removed    ->  {skill_dst}")
         removed = True
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
+        _ensure_owner_writable(version_file)
         version_file.unlink()
         removed = True
     refs_dir = skill_dst.parent / "references"
     if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+        _remove_installed_tree(refs_dir)
         removed = True
     for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
         try:
@@ -660,8 +717,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             )
             sys.exit(1)
         command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
-        command_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(command_src, command_dst)
+        _copy_packaged_file(command_src, command_dst)
         print(f"  command installed ->  {command_dst}")
 
     if cfg["claude_md"]:
@@ -859,17 +915,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
         skill_src = Path(__file__).parent / "skill-copilot.md"
         refs_bundle = "copilot"
     skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
-    skill_dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
-    try:
-        shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
-    except Exception:
-        try:
-            tmp_dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    _copy_packaged_file(skill_src, skill_dst)
     # Progressive-capable: install the packaged references/ sidecar when present.
     refs_src = Path(__file__).parent / "skills" / refs_bundle / "references"
     if refs_src.exists():
@@ -878,8 +924,8 @@ def vscode_install(project_dir: Path | None = None) -> None:
     else:
         orphan_refs = skill_dst.parent / "references"
         if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
-    (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
+            _remove_installed_tree(orphan_refs)
+    _write_version_stamp(skill_dst.parent)
     print(f"  skill installed  ->  {skill_dst}")
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
@@ -909,14 +955,16 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
     """Remove graphify VS Code Copilot Chat skill and .github/copilot-instructions.md section."""
     skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
     if skill_dst.exists():
+        _ensure_owner_writable(skill_dst)
         skill_dst.unlink()
         print(f"  skill removed    ->  {skill_dst}")
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
+        _ensure_owner_writable(version_file)
         version_file.unlink()
     refs_dir = skill_dst.parent / "references"
     if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+        _remove_installed_tree(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
@@ -1098,14 +1146,16 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
     # Remove skill file
     skill_dst = _platform_skill_destination("antigravity", project=project, project_dir=project_dir)
     if skill_dst.exists():
+        _ensure_owner_writable(skill_dst)
         skill_dst.unlink()
         print(f"graphify skill removed from {skill_dst}")
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
+        _ensure_owner_writable(version_file)
         version_file.unlink()
     refs_dir = skill_dst.parent / "references"
     if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+        _remove_installed_tree(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
@@ -1735,6 +1785,7 @@ def _kilo_uninstall_global() -> list[str]:
     removed = []
     command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
     if command_dst.exists():
+        _ensure_owner_writable(command_dst)
         command_dst.unlink()
         removed.append(f"command removed: {command_dst}")
     try:
@@ -1744,10 +1795,12 @@ def _kilo_uninstall_global() -> list[str]:
 
     skill_dst = Path.home() / _PLATFORM_CONFIG["kilo"]["skill_dst"]
     if skill_dst.exists():
+        _ensure_owner_writable(skill_dst)
         skill_dst.unlink()
         removed.append(f"skill removed: {skill_dst}")
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
+        _ensure_owner_writable(version_file)
         version_file.unlink()
     for d in (
         skill_dst.parent,
