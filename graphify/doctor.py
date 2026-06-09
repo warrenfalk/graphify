@@ -70,6 +70,13 @@ def _wrapper_status(command_path: str | None) -> dict[str, Any]:
     return {"detected": detected, "sets_python_no_user_site": "PYTHONNOUSERSITE" in text}
 
 
+def _command_path() -> str | None:
+    argv0 = sys.argv[0]
+    if argv0 and (os.sep in argv0 or (os.altsep and os.altsep in argv0)):
+        return argv0
+    return shutil.which(argv0) or shutil.which("graphify")
+
+
 def _dependency_status() -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for display_name, import_name, dist_name in _DEPENDENCIES:
@@ -144,7 +151,7 @@ def _recommend(graph_state: dict[str, Any], credentials: dict[str, dict[str, Any
 
 
 def collect(out_name: str = "graphify-out") -> dict[str, Any]:
-    command_path = shutil.which("graphify")
+    command_path = _command_path()
     command_realpath = _realpath(command_path)
     package_path = _realpath(__file__)
     dependencies = _dependency_status()
