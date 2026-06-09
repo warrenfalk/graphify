@@ -2183,6 +2183,8 @@ def main() -> None:
         print("    --api-timeout S         per-request timeout in seconds for the LLM client (default: 600)")
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
+        print("    --local-only            skip uncached semantic LLM extraction; mark it pending")
+        print("    --no-semantic           alias for --local-only")
         print("    --no-viz                compatibility no-op (extract writes no graph.html)")
         print("    --no-cluster            skip clustering, write raw extraction only")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")
@@ -3929,7 +3931,7 @@ def main() -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-viz] [--no-cluster] "
-                "[--max-workers N] [--token-budget N] [--max-concurrency N] "
+                "[--local-only|--no-semantic] [--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN]",
                 file=sys.stderr,
             )
@@ -3952,6 +3954,7 @@ def main() -> None:
         cli_postgres_dsn: str | None = None
         no_cluster = False
         no_viz = False
+        local_only = False
         dedup_llm = False
         google_workspace = False
         global_merge = False
@@ -4018,6 +4021,8 @@ def main() -> None:
                 no_cluster = True; i += 1
             elif a == "--no-viz":
                 no_viz = True; i += 1
+            elif a in ("--local-only", "--no-semantic"):
+                local_only = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--google-workspace":
@@ -4068,6 +4073,9 @@ def main() -> None:
         if not has_path and cli_postgres_dsn is None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
             sys.exit(1)
+        if local_only and dedup_llm:
+            print("error: --local-only cannot be combined with --dedup-llm", file=sys.stderr)
+            sys.exit(2)
 
         _VALID_MODES = {"deep"}
         if extract_mode is not None and extract_mode not in _VALID_MODES:
@@ -4139,16 +4147,21 @@ def main() -> None:
             deleted_files = []
             unchanged_total = 0
 
+        from graphify.extract import _get_extractor as _ast_get_extractor
+
+        ast_files = list(code_files)
+        ast_doc_files = [p for p in doc_files if _ast_get_extractor(p) is not None]
+        ast_files.extend(ast_doc_files)
         semantic_files = doc_files + paper_files + image_files
         if incremental_mode:
             print(
-                f"[graphify extract] {len(code_files)} code, {len(doc_files)} docs, "
+                f"[graphify extract] {len(ast_files)} AST-supported, {len(doc_files)} docs, "
                 f"{len(paper_files)} papers, {len(image_files)} images changed; "
                 f"{unchanged_total} unchanged; {len(deleted_files)} deleted"
             )
         else:
             print(
-                f"[graphify extract] found {len(code_files)} code, "
+                f"[graphify extract] found {len(ast_files)} AST-supported, "
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
@@ -4164,7 +4177,7 @@ def main() -> None:
             _format_backend_env_keys,
             _get_backend_api_key,
         )
-        needs_llm = bool(semantic_files) or dedup_llm
+        needs_llm = (bool(semantic_files) and not local_only) or dedup_llm
         if backend is None and needs_llm:
             backend = _detect_backend()
         if backend is not None and backend not in _BACKENDS:
@@ -4188,7 +4201,10 @@ def main() -> None:
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
                     "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
-                    "corpus needs no key.",
+                    "corpus needs no key. Standalone CLI semantic extraction uses "
+                    "installed backend SDKs and provider credentials; it cannot use "
+                    "Codex subagents. Run the Codex skill for subagent semantic "
+                    "extraction, or pass --local-only to skip uncached semantic files.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -4240,17 +4256,18 @@ def main() -> None:
                     )
                     sys.exit(1)
 
-        # AST extraction on code files. Empty code list (docs-only corpus) is
-        # the issue #698 case — skip cleanly instead of crashing inside extract().
+        # AST extraction on deterministic extractor-supported files. Some docs
+        # (Markdown/MDX/QMD) have structural extractors, so keyless local runs
+        # can still produce a useful graph while semantic LLM work is pending.
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-        if code_files:
+        if ast_files:
             from graphify.extract import extract as _ast_extract
             ast_kwargs: dict = {"cache_root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
-            print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
+            print(f"[graphify extract] AST extraction on {len(ast_files)} AST-supported files...")
             try:
-                ast_result = _ast_extract(code_files, **ast_kwargs)
+                ast_result = _ast_extract(ast_files, **ast_kwargs)
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -4266,6 +4283,7 @@ def main() -> None:
         }
         sem_cache_hits = 0
         sem_cache_misses = 0
+        semantic_pending_files: list[str] = []
         if semantic_files:
             sem_paths_str = [str(p) for p in semantic_files]
             cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
@@ -4280,7 +4298,28 @@ def main() -> None:
                 print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
 
             if uncached_paths:
-                print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
+                if local_only:
+                    semantic_pending_files = [str(p) for p in uncached_paths]
+                    pending_path = graphify_out / ".graphify_semantic_pending.json"
+                    pending_path.write_text(
+                        json.dumps(
+                            {
+                                "mode": "local-only",
+                                "files": semantic_pending_files,
+                                "message": "semantic extraction pending; rerun without --local-only when credentials are available",
+                            },
+                            indent=2,
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    (graphify_out / "needs_update").write_text("1", encoding="utf-8")
+                    print(
+                        f"[graphify extract] local-only: skipped {len(uncached_paths)} "
+                        "uncached semantic file(s); semantic extraction pending"
+                    )
+                else:
+                    print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
                 corpus_kwargs: dict = {
                     "backend": backend,
                     "model": model,
@@ -4307,25 +4346,26 @@ def main() -> None:
                     )
                 corpus_kwargs["on_chunk_done"] = _progress
 
-                try:
-                    fresh = _extract_corpus_parallel(
-                        [Path(p) for p in uncached_paths],
-                        **corpus_kwargs,
-                    )
-                except ImportError as exc:
-                    print(f"error: {exc}", file=sys.stderr)
-                    sys.exit(1)
-                except Exception as exc:
-                    print(
-                        f"[graphify extract] semantic extraction failed: {exc}",
-                        file=sys.stderr,
-                    )
-                    fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+                fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+                if not local_only:
+                    try:
+                        fresh = _extract_corpus_parallel(
+                            [Path(p) for p in uncached_paths],
+                            **corpus_kwargs,
+                        )
+                    except ImportError as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    except Exception as exc:
+                        print(
+                            f"[graphify extract] semantic extraction failed: {exc}",
+                            file=sys.stderr,
+                        )
 
                 # on_chunk_done only fires after a chunk succeeds. If fresh
                 # semantic extraction was requested and no chunks completed,
                 # fail instead of writing an AST-only graph with exit 0.
-                if uncached_paths and _chunk_stats["succeeded"] == 0:
+                if uncached_paths and not local_only and _chunk_stats["succeeded"] == 0:
                     print(
                         f"[graphify extract] error: all semantic chunks failed "
                         f"for backend '{backend}' ({len(uncached_paths)} uncached files) - "
@@ -4334,20 +4374,30 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
-                try:
-                    _save_semantic_cache(
-                        fresh.get("nodes", []),
-                        fresh.get("edges", []),
-                        fresh.get("hyperedges", []),
-                        root=target,
-                    )
-                except Exception as exc:
-                    print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
+                if not local_only:
+                    try:
+                        _save_semantic_cache(
+                            fresh.get("nodes", []),
+                            fresh.get("edges", []),
+                            fresh.get("hyperedges", []),
+                            root=target,
+                        )
+                    except Exception as exc:
+                        print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
                 sem_result["nodes"].extend(fresh.get("nodes", []))
                 sem_result["edges"].extend(fresh.get("edges", []))
                 sem_result["hyperedges"].extend(fresh.get("hyperedges", []))
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
+            elif local_only:
+                for stale in (
+                    graphify_out / ".graphify_semantic_pending.json",
+                    graphify_out / "needs_update",
+                ):
+                    try:
+                        stale.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
         pg_result: dict = {"nodes": [], "edges": []}
         if cli_postgres_dsn is not None:
@@ -4520,11 +4570,15 @@ def main() -> None:
             print(
                 f"[graphify extract] incremental summary: "
                 f"{sem_cache_hits + unchanged_total} files cached/unchanged, "
-                f"{len(code_files) + sem_cache_misses} re-extracted, "
+                f"{len(ast_files) + (0 if local_only else sem_cache_misses)} re-extracted, "
                 f"{len(deleted_files)} deleted"
             )
+            if semantic_pending_files:
+                print(f"[graphify extract] semantic pending: {len(semantic_pending_files)} file(s)")
         elif sem_cache_hits:
             print(f"[graphify extract] semantic cache: {sem_cache_hits} cached, {sem_cache_misses} re-extracted")
+        elif semantic_pending_files:
+            print(f"[graphify extract] semantic pending: {len(semantic_pending_files)} file(s)")
         if merged["input_tokens"] or merged["output_tokens"]:
             print(
                 f"[graphify extract] tokens: "
