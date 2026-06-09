@@ -57,6 +57,13 @@ def test_doctor_json_reports_runtime_and_graph_state(tmp_path):
     assert data["recommended_next_command"] == "graphify extract . --local-only --no-viz"
 
 
+def test_interpreter_prints_current_python(tmp_path):
+    r = _run(["interpreter"], tmp_path, env=_without_backend_keys())
+
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == sys.executable
+
+
 def test_doctor_text_mentions_hermetic_status(tmp_path):
     r = _run(["doctor"], tmp_path, env=_without_backend_keys())
 

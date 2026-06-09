@@ -2144,7 +2144,7 @@ def main() -> None:
     # Skip during install/uninstall (hook writes trigger a fresh check anyway).
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
-    _silent_cmds = {"install", "uninstall", "hook-check"}
+    _silent_cmds = {"install", "uninstall", "hook-check", "interpreter"}
     if not any(arg in _silent_cmds for arg in sys.argv):
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
@@ -2252,6 +2252,7 @@ def main() -> None:
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
         print("  doctor [--json]        report runtime, Nix, dependency, credential, and graph diagnostics")
+        print("  interpreter            print the Python interpreter for this graphify install")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
@@ -2324,6 +2325,16 @@ def main() -> None:
         return
 
     cmd = sys.argv[1]
+
+    if cmd == "interpreter":
+        if len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help", "-?"):
+            print("Usage: graphify interpreter")
+            return
+        if len(sys.argv) > 2:
+            print(f"error: unknown interpreter option: {sys.argv[2]}", file=sys.stderr)
+            sys.exit(2)
+        print(os.environ.get("GRAPHIFY_INTERPRETER") or sys.executable)
+        return
 
     if cmd == "doctor":
         json_mode = False

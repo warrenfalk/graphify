@@ -18,5 +18,6 @@ def test_nix_package_includes_common_semantic_backend_sdks_and_runtime_tools():
     text = FLAKE.read_text(encoding="utf-8")
     for expected in ("openai", "tiktoken", "anthropic", "boto3"):
         assert expected in text
-    for expected in ("makeWrapper", "git"):
+    for expected in ("python.withPackages", "GRAPHIFY_INTERPRETER", "-I -m graphify", "git"):
         assert expected in text
+    assert "makeWrapper" not in text

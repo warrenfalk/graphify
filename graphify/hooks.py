@@ -11,37 +11,34 @@ _CHECKOUT_MARKER = "# graphify-checkout-hook-start"
 _CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
 
 # __PINNED_PYTHON__ is replaced at install time with the absolute path of the
-# Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
-# installs the interpreter lives inside an isolated venv, so the launcher on
-# PATH is the only entry point — and GUI git clients / CI runners often have a
-# minimal PATH that omits ~/.local/bin.  Pinning sys.executable at install time
-# makes the hook work regardless of PATH at git-trigger time.
+# Python interpreter that ran `graphify hook install`.  The hook prefers the
+# current `graphify interpreter` result when the launcher is on PATH, then falls
+# back to the pinned interpreter for GUI git clients / CI runners with minimal
+# PATHs.
 _PYTHON_DETECT = """\
-# Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs).
-# _PINNED was recorded at hook-install time; tried first so the hook works even
-# when the graphify launcher is not on PATH (common in GUI clients and CI).
+# Detect the correct Python interpreter (handles Nix, uv tool, pipx, venv, system installs).
 GRAPHIFY_PYTHON=""
-_PINNED='__PINNED_PYTHON__'
-if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "import graphify" 2>/dev/null; then
-    GRAPHIFY_PYTHON="$_PINNED"
-fi
-# Second probe: read graphify-out/.graphify_python (written by the skill and
-# CLI; survives uv-tool reinstalls and is the same source the README documents).
+# First probe: ask the current graphify launcher which interpreter owns this install.
+GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    _GFY_PYTHON_FILE="graphify-out/.graphify_python"
-    if [ -f "$_GFY_PYTHON_FILE" ]; then
-        _FROM_FILE=$(cat "$_GFY_PYTHON_FILE" 2>/dev/null | tr -d '[:space:]')
-        case "$_FROM_FILE" in
-            *[!a-zA-Z0-9/_.@:\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
+    if [ -n "$GRAPHIFY_BIN" ]; then
+        _FROM_GRAPHIFY=$("$GRAPHIFY_BIN" interpreter 2>/dev/null | tr -d '[:space:]')
+        case "$_FROM_GRAPHIFY" in
+            *[!a-zA-Z0-9/_.@:\\-]*) _FROM_GRAPHIFY="" ;;  # allowlist (covers Windows paths)
         esac
-        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "import graphify" 2>/dev/null; then
-            GRAPHIFY_PYTHON="$_FROM_FILE"
+        if [ -n "$_FROM_GRAPHIFY" ] && [ -x "$_FROM_GRAPHIFY" ] && "$_FROM_GRAPHIFY" -c "import graphify" 2>/dev/null; then
+            GRAPHIFY_PYTHON="$_FROM_GRAPHIFY"
         fi
     fi
 fi
-# Third probe: resolve via the graphify launcher on PATH (shebang probe).
+# Second probe: use the interpreter recorded when the hook was installed. This
+# keeps hooks working when graphify is not on PATH at git-trigger time.
+_PINNED='__PINNED_PYTHON__'
+if [ -z "$GRAPHIFY_PYTHON" ] && [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "import graphify" 2>/dev/null; then
+    GRAPHIFY_PYTHON="$_PINNED"
+fi
+# Third probe: resolve legacy Python-script launchers via shebang.
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
         case "$GRAPHIFY_BIN" in
             *.exe) _SHEBANG="" ;;
@@ -397,13 +394,11 @@ def install(path: Path = Path(".")) -> str:
 
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
 
-    # Pin the current interpreter so the hook works even when the graphify
-    # launcher is not on PATH at git-trigger time (uv tool / pipx isolation).
-    # sys.executable is the Python running this very install command, so it is
-    # always the correct isolated-venv interpreter.  The placeholder is replaced
-    # in both scripts before writing; the allowlist in _PYTHON_DETECT strips any
-    # characters unsafe in a shell path, and import-verification catches a stale
-    # pinned path so it safely falls through to the dynamic detection.
+    # Pin the current interpreter as a fallback for git-trigger time when the
+    # graphify launcher is not on PATH (common in GUI clients and CI).  Hooks
+    # prefer `graphify interpreter` when available so they follow the currently
+    # installed launcher, and import-verification catches a stale pinned path so
+    # it safely falls through to the remaining probes.
     # Apply the same allowlist used in _PYTHON_DETECT for all other probes.
     # This rejects any character that is not a valid plain filesystem path
     # character, preventing $(...), backtick, double-quote, semicolon, etc.

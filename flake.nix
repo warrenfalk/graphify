@@ -233,21 +233,18 @@
         pkgs.git
       ];
 
-      mkGraphifyy =
+      mkGraphifyyPackage =
         {
           pname ? "graphifyy",
           extraDependencies ? [ ],
-          nativeBuildInputs ? [ ],
-          postFixup ? "",
         }:
-        py.buildPythonApplication rec {
+        py.buildPythonPackage rec {
           inherit pname;
           version = "0.8.35";
           pyproject = true;
           src = ./.;
           build-system = [ py.setuptools ];
           dependencies = coreDependencies ++ extraDependencies;
-          inherit nativeBuildInputs postFixup;
           doCheck = false;
           pythonImportsCheck = [ "graphify" ];
           meta = {
@@ -258,19 +255,45 @@
           };
         };
 
-      graphifyyCore = mkGraphifyy {
+      mkGraphifyyCli =
+        {
+          graphifyPackage,
+        }:
+        let
+          graphifyPython = python.withPackages (_: [ graphifyPackage ]);
+        in
+        pkgs.writeShellApplication {
+          name = "graphify";
+          runtimeInputs = runtimeTools;
+          text = ''
+            export PYTHONNOUSERSITE=1
+            export GRAPHIFY_COMMAND_WRAPPER="$0"
+            export GRAPHIFY_INTERPRETER="${graphifyPython}/bin/python"
+            exec "$GRAPHIFY_INTERPRETER" -I -m graphify "$@"
+          '';
+          meta = {
+            description = "Turn a project into a queryable knowledge graph";
+            homepage = "https://github.com/safishamsi/graphify";
+            license = lib.licenses.mit;
+            mainProgram = "graphify";
+          };
+        };
+
+      graphifyyCorePackage = mkGraphifyyPackage {
         pname = "graphifyy-core";
       };
 
-      graphifyy = mkGraphifyy {
+      graphifyyPackage = mkGraphifyyPackage {
         pname = "graphifyy";
         extraDependencies = commonRuntimeDependencies;
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postFixup = ''
-          wrapProgram $out/bin/graphify \
-            --set PYTHONNOUSERSITE 1 \
-            --prefix PATH : ${lib.makeBinPath runtimeTools}
-        '';
+      };
+
+      graphifyyCore = mkGraphifyyCli {
+        graphifyPackage = graphifyyCorePackage;
+      };
+
+      graphifyy = mkGraphifyyCli {
+        graphifyPackage = graphifyyPackage;
       };
     in
     {

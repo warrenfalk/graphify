@@ -63,54 +63,38 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ### Step 1 - Ensure graphify is installed
 
 ```bash
-# If a graphify command is already installed, treat it as the source of truth.
-# Nix-installed graphify is self-contained; use `graphify doctor` to inspect the
-# package and `graphify extract INPUT_PATH --local-only --no-viz` for keyless local graphs.
-# do not use system Python, pip, or uv for normal installed-package operation.
+# Always resolve Python through the currently installed graphify command.
+# Do not cache the interpreter path: Nix/NixOS profiles can switch underneath
+# a repo, and the interpreter must stay tied to the active graphify executable.
+if ! command -v graphify >/dev/null 2>&1; then
+    echo "ERROR: graphify is not installed or not on PATH. Install graphify first, then rerun /graphify."
+    exit 1
+fi
 
-# Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
-PYTHON=""
-GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-# 1. uv tool installs — most reliable on modern Mac/Linux
-if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
-    _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
-    if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
+GRAPHIFY_PYTHON=$(graphify interpreter 2>/dev/null)
+if [ -z "$GRAPHIFY_PYTHON" ] || [ ! -x "$GRAPHIFY_PYTHON" ]; then
+    echo "ERROR: graphify interpreter did not return an executable Python path."
+    exit 1
 fi
-# 2. Read shebang from graphify binary (pipx and direct pip installs)
-if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
-    _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-    case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.-]*) ;;
-        *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
-    esac
+
+if ! "$GRAPHIFY_PYTHON" -c "import graphify" >/dev/null 2>&1; then
+    echo "ERROR: graphify interpreter cannot import graphify. Reinstall or rebuild the active graphify package."
+    exit 1
 fi
-# 3. Fall back to python3
-if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
-if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
-    if command -v uv >/dev/null 2>&1; then
-        uv tool install --upgrade graphifyy -q 2>&1 | tail -3
-        _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
-        if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
-    else
-        "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
-          || "$PYTHON" -m pip install graphifyy -q --break-system-packages 2>&1 | tail -3
-    fi
-fi
-# Write interpreter path for all subsequent steps (persists across invocations)
+
 mkdir -p graphify-out
-"$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
 # Save scan root so `graphify update` (no args) knows where to look next time
 echo "$(cd INPUT_PATH && pwd)" > graphify-out/.graphify_root
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
+**In every subsequent bash block, replace `python3` with `$(graphify interpreter)`. Do not cache the interpreter path.**
 
 ### Step 2 - Detect files
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
@@ -170,7 +154,7 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.extract import collect_files, extract
 from pathlib import Path
@@ -208,7 +192,7 @@ Before dispatching subagents, print a timing estimate:
 Before dispatching any subagents, check which files already have cached extraction results:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.cache import check_semantic_cache
 from pathlib import Path
@@ -265,7 +249,7 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json, glob
 from pathlib import Path
 
@@ -289,7 +273,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 
 Save new results to cache:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.cache import save_semantic_cache
 from pathlib import Path
@@ -302,7 +286,7 @@ print(f'Cached {saved} files')
 
 Merge cached + new results into `graphify-out/.graphify_semantic.json`:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from pathlib import Path
 
@@ -335,7 +319,7 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 #### Part C - Merge AST + semantic into final extraction
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from pathlib import Path
 
@@ -372,7 +356,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ```bash
 mkdir -p graphify-out
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
@@ -425,7 +409,7 @@ Read `graphify-out/.graphify_analysis.json`. For each community key, look at its
 Then regenerate the report and save the labels for the visualizer:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import score_all
@@ -487,7 +471,7 @@ These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -561,21 +545,7 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
-
-```bash
-if [ ! -f graphify-out/.graphify_python ]; then
-    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
-    fi
-    mkdir -p graphify-out
-    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-fi
-```
+Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), resolve Python through the active graphify executable with `graphify interpreter`. Do not cache the interpreter path in `graphify-out/`; the active Nix/NixOS profile or tool install can change between invocations.
 
 ## For --update and --cluster-only
 

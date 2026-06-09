@@ -236,19 +236,20 @@ def test_devin_skill_file_exists_in_package():
     assert skill.exists(), "skill-devin.md missing from package"
 
 
-def test_devin_skill_file_uses_python_c_syntax():
+def test_devin_skill_file_uses_graphify_interpreter_syntax():
     """Devin skill must use inline python -c syntax (cross-platform, no bash heredocs).
 
-    All mature graphify skills use the interpreter-detection pattern
-    ``$(cat graphify-out/.graphify_python) -c "..."`` rather than bare
-    ``python -c "..."`` so they work in pipx / venv environments.
+    All mature graphify skills resolve Python through the active graphify command
+    with ``$(graphify interpreter) -c "..."`` rather than caching a stale
+    interpreter path under graphify-out/.
     """
     import graphify
     skill = (Path(graphify.__file__).parent / "skill-devin.md").read_text()
-    assert '.graphify_python) -c "' in skill, (
-        "skill-devin.md must use the interpreter-detection pattern "
-        "'$(cat graphify-out/.graphify_python) -c \"...\"'"
+    assert '$(graphify interpreter) -c "' in skill, (
+        "skill-devin.md must resolve Python through "
+        "'$(graphify interpreter) -c \"...\"'"
     )
+    assert "graphify-out/.graphify_python" not in skill
     assert "#!/bin/bash" not in skill
 
 

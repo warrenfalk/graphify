@@ -71,6 +71,13 @@ def _wrapper_status(command_path: str | None) -> dict[str, Any]:
 
 
 def _command_path() -> str | None:
+    wrapper = os.environ.get("GRAPHIFY_COMMAND_WRAPPER")
+    if wrapper:
+        if os.sep in wrapper or (os.altsep and os.altsep in wrapper):
+            return wrapper
+        resolved = shutil.which(wrapper)
+        if resolved:
+            return resolved
     argv0 = sys.argv[0]
     if argv0 and (os.sep in argv0 or (os.altsep and os.altsep in argv0)):
         return argv0

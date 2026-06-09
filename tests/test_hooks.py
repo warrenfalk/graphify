@@ -161,16 +161,24 @@ def test_hook_skips_head_on_exe():
     assert "*.exe) _SHEBANG=" in _PYTHON_DETECT or '*.exe)' in _PYTHON_DETECT
 
 
+def test_hook_detector_uses_graphify_interpreter_not_cached_file():
+    """Hook detection must not read the old project-local interpreter cache."""
+    from graphify.hooks import _PYTHON_DETECT
+
+    assert "graphify-out/.graphify_python" not in _PYTHON_DETECT
+    assert '"$GRAPHIFY_BIN" interpreter' in _PYTHON_DETECT
+
+
 def test_install_embeds_pinned_interpreter(tmp_path):
-    """Hook scripts must embed sys.executable so the hook works without the
-    graphify launcher on PATH (uv tool / pipx isolation, #1127).
+    """Hook scripts must embed sys.executable as a fallback when the graphify
+    launcher is not on PATH (uv tool / pipx isolation, #1127).
 
     When graphify is installed via `uv tool install graphifyy` or `pipx install
     graphifyy`, the interpreter lives in an isolated venv and the launcher is in
     ~/.local/bin.  GUI git clients and CI runners often run with a minimal PATH
     that omits that directory, so `command -v graphify` fails, the python3/python
-    fallbacks cannot import graphify (wrong venv), and the hook silently exits 0.
-    Pinning sys.executable at install time makes the hook work regardless of PATH.
+    fallbacks cannot import graphify (wrong venv).  Pinning sys.executable at
+    install time keeps the hook working in that reduced environment.
     """
     import re, sys
     repo = _make_git_repo(tmp_path)

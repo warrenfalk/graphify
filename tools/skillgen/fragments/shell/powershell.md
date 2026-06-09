@@ -1,61 +1,31 @@
 ```powershell
-# Detect Python with graphify — uv/pipx-aware (fixes #831)
+# Always resolve Python through the currently installed graphify command.
+# Do not cache the interpreter path: profiles and tool installs can change
+# underneath a repo, and the interpreter must stay tied to the active executable.
 New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
-$GRAPHIFY_PYTHON = $null
 
-function Find-GraphifyPython {
-    # 1. uv tool install — 'uv tool dir' is authoritative, respects UV_TOOL_DIR automatically
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $uvDir = (uv tool dir 2>$null).Trim()
-        if ($uvDir) {
-            $py = Join-Path $uvDir "graphifyy\Scripts\python.exe"
-            if (Test-Path $py) {
-                & $py -c "import graphify" 2>$null
-                if ($LASTEXITCODE -eq 0) { return $py }
-            }
-        }
-    }
-    # 2. pipx install — 'pipx environment' respects PIPX_HOME automatically
-    if (Get-Command pipx -ErrorAction SilentlyContinue) {
-        $venvs = (pipx environment --value PIPX_LOCAL_VENVS 2>$null).Trim()
-        if ($venvs) {
-            $py = Join-Path $venvs "graphifyy\Scripts\python.exe"
-            if (Test-Path $py) {
-                & $py -c "import graphify" 2>$null
-                if ($LASTEXITCODE -eq 0) { return $py }
-            }
-        }
-    }
-    # 3. Active venv / conda / pip-into-current-env
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        & $pyCmd.Source -c "import graphify" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            return (& $pyCmd.Source -c "import sys; print(sys.executable)").Trim()
-        }
-    }
-    return $null
+if (-not (Get-Command graphify -ErrorAction SilentlyContinue)) {
+    Write-Error "graphify is not installed or not on PATH. Install graphify first, then rerun /graphify."
+    exit 1
 }
 
-# Try to find the right Python (uv → pipx → active env)
-$GRAPHIFY_PYTHON = Find-GraphifyPython
+$GRAPHIFY_PYTHON = (graphify interpreter 2>$null).Trim()
 
-# Not found — install then re-detect
-if (-not $GRAPHIFY_PYTHON) {
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        uv tool install --upgrade graphifyy -q 2>&1 | Select-Object -Last 3
-    } else {
-        pip install graphifyy -q 2>&1 | Select-Object -Last 3
-    }
-    $GRAPHIFY_PYTHON = Find-GraphifyPython
+if (-not $GRAPHIFY_PYTHON -or -not (Test-Path $GRAPHIFY_PYTHON)) {
+    Write-Error "graphify interpreter did not return an executable Python path."
+    exit 1
 }
 
-# Save interpreter path — all subsequent steps read this
-$GRAPHIFY_PYTHON | Out-File -FilePath graphify-out\.graphify_python -Encoding utf8 -NoNewline
+& $GRAPHIFY_PYTHON -c "import graphify" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "graphify interpreter cannot import graphify. Reinstall or rebuild the active graphify package."
+    exit 1
+}
+
 # Save scan root so `graphify update` (no args) knows where to look next time
 (Resolve-Path INPUT_PATH).Path | Out-File -FilePath graphify-out\.graphify_root -Encoding utf8 -NoNewline
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**
+**In every subsequent block, resolve Python with `graphify interpreter` in place of a bare `python3`. Do not cache the interpreter path.**

@@ -261,7 +261,8 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     core, _ = _platform_artifacts("windows")
     assert core.startswith("---\nname: graphify-windows\n")
     assert "```powershell" in core
-    assert "function Find-GraphifyPython" in core
+    assert "graphify interpreter" in core
+    assert "Do not cache the interpreter path" in core
     assert "## Troubleshooting" in core
     assert "### PowerShell 5.1: Vertical scrolling stops working" in core
     # The troubleshooting section sits before Honesty Rules, single separator.
@@ -296,10 +297,11 @@ def test_codex_skill_distinguishes_standalone_cli_from_skill_subagents():
 
 def test_codex_skill_is_cli_first_for_installed_nix_commands():
     core, _ = _platform_artifacts("codex")
-    assert "Nix-installed graphify is self-contained" in core
-    assert "graphify doctor" in core
-    assert "graphify extract INPUT_PATH --local-only --no-viz" in core
-    assert "do not use system Python, pip, or uv for normal installed-package operation" in core
+    assert "graphify interpreter" in core
+    assert "Do not cache the interpreter path" in core
+    assert "graphify-out/.graphify_python" not in core
+    assert "uv tool install --upgrade graphifyy" not in core
+    assert "pip install graphifyy" not in core
 
 
 def test_codex_and_windows_unify_enum_to_six_values():
@@ -468,20 +470,26 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
 def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
     """The rendered monolith differs from v8 on exactly the allowed lines.
 
-    Three changes are now in play for the monoliths: the file_type enum unified to
-    the six-value superset (the prose guidance line + the schema line), the
-    frontmatter description unified across all platforms, and the shell-agnostic
-    chunk-cleanup rewrite (#1172). Nothing else may differ.
+    The Step 1 setup block is intentionally replaced with the live
+    `graphify interpreter` flow. Outside that block, three line-level changes
+    are allowed: the file_type enum superset, the unified frontmatter
+    description, and the shell-agnostic chunk-cleanup rewrite (#1172).
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
-        rendered = gen.render(platforms[key])[0].content.splitlines()
+        rendered_raw = gen.render(platforms[key])[0].content
+        assert "graphify interpreter" in rendered_raw
+        assert "graphify-out/.graphify_python" not in rendered_raw
+        rendered = gen._normalise_monolith_allowed_rewrites(rendered_raw.splitlines())
         # Strip trigger: lines from the reference — their removal (#1180) is a
         # permitted diff alongside enum, description, and chunk-cleanup changes.
-        original = [
-            l for l in gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
-            if not gen._is_trigger_line(l)
-        ]
+        original = gen._normalise_monolith_allowed_rewrites(
+            [
+                l
+                for l in gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
+                if not gen._is_trigger_line(l)
+            ]
+        )
         assert len(rendered) == len(original), f"[{key}] line count changed"
         diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
         # Four lines change: the prose enum guidance, the schema line,

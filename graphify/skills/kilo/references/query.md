@@ -11,7 +11,7 @@ Two traversal modes - choose based on the question:
 
 First check the graph exists:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 from pathlib import Path
 if not Path('graphify-out/graph.json').exists():
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
@@ -35,7 +35,7 @@ If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal 
 5. If the graph lacks enough information, say so - do not hallucinate edges.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from networkx.readwrite import json_graph
 import networkx as nx
@@ -126,7 +126,7 @@ Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, 
 After writing the answer, save it back into the graph so it improves future queries:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+$(graphify interpreter) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
 ```
 
 Replace `QUESTION` with the user's verbatim question, `ANSWER` with your full answer text, and the node list with the labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
@@ -138,7 +138,7 @@ Replace `QUESTION` with the user's verbatim question, `ANSWER` with your full an
 Find the shortest path between two named concepts in the graph.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -190,7 +190,7 @@ Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then 
 After writing the explanation, save it back:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+$(graphify interpreter) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -200,7 +200,7 @@ $(cat graphify-out/.graphify_python) -m graphify save-result --question "Path fr
 Give a plain-language explanation of a single node - everything connected to it.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -245,5 +245,5 @@ Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sent
 After writing the explanation, save it back:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+$(graphify interpreter) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
 ```

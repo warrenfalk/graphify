@@ -63,71 +63,41 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ### Step 1 - Ensure graphify is installed
 
 ```powershell
-# Detect Python with graphify — uv/pipx-aware (fixes #831)
+# Always resolve Python through the currently installed graphify command.
+# Do not cache the interpreter path: profiles and tool installs can change
+# underneath a repo, and the interpreter must stay tied to the active executable.
 New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
-$GRAPHIFY_PYTHON = $null
 
-function Find-GraphifyPython {
-    # 1. uv tool install — 'uv tool dir' is authoritative, respects UV_TOOL_DIR automatically
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $uvDir = (uv tool dir 2>$null).Trim()
-        if ($uvDir) {
-            $py = Join-Path $uvDir "graphifyy\Scripts\python.exe"
-            if (Test-Path $py) {
-                & $py -c "import graphify" 2>$null
-                if ($LASTEXITCODE -eq 0) { return $py }
-            }
-        }
-    }
-    # 2. pipx install — 'pipx environment' respects PIPX_HOME automatically
-    if (Get-Command pipx -ErrorAction SilentlyContinue) {
-        $venvs = (pipx environment --value PIPX_LOCAL_VENVS 2>$null).Trim()
-        if ($venvs) {
-            $py = Join-Path $venvs "graphifyy\Scripts\python.exe"
-            if (Test-Path $py) {
-                & $py -c "import graphify" 2>$null
-                if ($LASTEXITCODE -eq 0) { return $py }
-            }
-        }
-    }
-    # 3. Active venv / conda / pip-into-current-env
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        & $pyCmd.Source -c "import graphify" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            return (& $pyCmd.Source -c "import sys; print(sys.executable)").Trim()
-        }
-    }
-    return $null
+if (-not (Get-Command graphify -ErrorAction SilentlyContinue)) {
+    Write-Error "graphify is not installed or not on PATH. Install graphify first, then rerun /graphify."
+    exit 1
 }
 
-# Try to find the right Python (uv → pipx → active env)
-$GRAPHIFY_PYTHON = Find-GraphifyPython
+$GRAPHIFY_PYTHON = (graphify interpreter 2>$null).Trim()
 
-# Not found — install then re-detect
-if (-not $GRAPHIFY_PYTHON) {
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        uv tool install --upgrade graphifyy -q 2>&1 | Select-Object -Last 3
-    } else {
-        pip install graphifyy -q 2>&1 | Select-Object -Last 3
-    }
-    $GRAPHIFY_PYTHON = Find-GraphifyPython
+if (-not $GRAPHIFY_PYTHON -or -not (Test-Path $GRAPHIFY_PYTHON)) {
+    Write-Error "graphify interpreter did not return an executable Python path."
+    exit 1
 }
 
-# Save interpreter path — all subsequent steps read this
-$GRAPHIFY_PYTHON | Out-File -FilePath graphify-out\.graphify_python -Encoding utf8 -NoNewline
+& $GRAPHIFY_PYTHON -c "import graphify" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "graphify interpreter cannot import graphify. Reinstall or rebuild the active graphify package."
+    exit 1
+}
+
 # Save scan root so `graphify update` (no args) knows where to look next time
 (Resolve-Path INPUT_PATH).Path | Out-File -FilePath graphify-out\.graphify_root -Encoding utf8 -NoNewline
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**
+**In every subsequent block, resolve Python with `graphify interpreter` in place of a bare `python3`. Do not cache the interpreter path.**
 
 ### Step 2 - Detect files
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
@@ -187,7 +157,7 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.extract import collect_files, extract
 from pathlib import Path
@@ -225,7 +195,7 @@ Before dispatching subagents, print a timing estimate:
 Before dispatching any subagents, check which files already have cached extraction results:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.cache import check_semantic_cache
 from pathlib import Path
@@ -286,7 +256,7 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json, glob
 from pathlib import Path
 
@@ -310,7 +280,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 
 Save new results to cache:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.cache import save_semantic_cache
 from pathlib import Path
@@ -323,7 +293,7 @@ print(f'Cached {saved} files')
 
 Merge cached + new results into `graphify-out/.graphify_semantic.json`:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from pathlib import Path
 
@@ -356,7 +326,7 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 #### Part C - Merge AST + semantic into final extraction
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from pathlib import Path
 
@@ -393,7 +363,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ```bash
 mkdir -p graphify-out
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
@@ -446,7 +416,7 @@ Read `graphify-out/.graphify_analysis.json`. For each community key, look at its
 Then regenerate the report and save the labels for the visualizer:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import score_all
@@ -508,7 +478,7 @@ These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -582,21 +552,7 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
-
-```bash
-if [ ! -f graphify-out/.graphify_python ]; then
-    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
-    fi
-    mkdir -p graphify-out
-    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-fi
-```
+Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), resolve Python through the active graphify executable with `graphify interpreter`. Do not cache the interpreter path in `graphify-out/`; the active Nix/NixOS profile or tool install can change between invocations.
 
 ## For --update and --cluster-only
 

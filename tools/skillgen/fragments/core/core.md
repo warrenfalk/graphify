@@ -64,7 +64,7 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ### Step 2 - Detect files
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
@@ -124,7 +124,7 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.extract import collect_files, extract
 from pathlib import Path
@@ -162,7 +162,7 @@ Before dispatching subagents, print a timing estimate:
 Before dispatching any subagents, check which files already have cached extraction results:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.cache import check_semantic_cache
 from pathlib import Path
@@ -199,7 +199,7 @@ If more than half the chunks failed or are missing, stop and tell the user to re
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json, glob
 from pathlib import Path
 
@@ -223,7 +223,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 
 Save new results to cache:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from graphify.cache import save_semantic_cache
 from pathlib import Path
@@ -236,7 +236,7 @@ print(f'Cached {saved} files')
 
 Merge cached + new results into `graphify-out/.graphify_semantic.json`:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from pathlib import Path
 
@@ -269,7 +269,7 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 #### Part C - Merge AST + semantic into final extraction
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from pathlib import Path
 
@@ -306,7 +306,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ```bash
 mkdir -p graphify-out
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
@@ -359,7 +359,7 @@ Read `graphify-out/.graphify_analysis.json`. For each community key, look at its
 Then regenerate the report and save the labels for the visualizer:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import sys, json
 from graphify.build import build_from_json
 from graphify.cluster import score_all
@@ -421,7 +421,7 @@ These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+$(graphify interpreter) -c "
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -495,21 +495,7 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
-
-```bash
-if [ ! -f graphify-out/.graphify_python ]; then
-    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
-    fi
-    mkdir -p graphify-out
-    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-fi
-```
+Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), resolve Python through the active graphify executable with `graphify interpreter`. Do not cache the interpreter path in `graphify-out/`; the active Nix/NixOS profile or tool install can change between invocations.
 
 ## For --update and --cluster-only
 

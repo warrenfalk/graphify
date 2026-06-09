@@ -725,13 +725,56 @@ def _is_trigger_line(line: str) -> bool:
     return line.strip().startswith("trigger:")
 
 
+def _normalise_setup_block(lines: list[str]) -> list[str]:
+    """Collapse the intentionally replaced Step 1 setup block for v8 roundtrips."""
+    start_marker = "### Step 1 - Ensure graphify is installed"
+    end_marker = "### Step 2 - Detect files"
+    try:
+        start = lines.index(start_marker)
+        end = lines.index(end_marker)
+    except ValueError:
+        return lines
+    if start >= end:
+        return lines
+    return lines[: start + 1] + ["__GRAPHIFY_INTERPRETER_SETUP_BLOCK__"] + lines[end:]
+
+
+def _normalise_interpreter_guard_block(lines: list[str]) -> list[str]:
+    """Collapse Devin's intentionally replaced subcommand interpreter guard."""
+    start_marker = "## Interpreter guard for subcommands"
+    end_marker = "## For --update (incremental re-extraction)"
+    try:
+        start = lines.index(start_marker)
+        end = lines.index(end_marker)
+    except ValueError:
+        return lines
+    if start >= end:
+        return lines
+    return lines[: start + 1] + ["__GRAPHIFY_INTERPRETER_GUARD_BLOCK__"] + lines[end:]
+
+
+def _normalise_interpreter_invocations(lines: list[str]) -> list[str]:
+    """Treat old cached-python and new live-interpreter command lines as equivalent."""
+    return [
+        line.replace("$(cat graphify-out/.graphify_python)", "$(__GRAPHIFY_INTERPRETER__)")
+        .replace("$(graphify interpreter)", "$(__GRAPHIFY_INTERPRETER__)")
+        for line in lines
+    ]
+
+
+def _normalise_monolith_allowed_rewrites(lines: list[str]) -> list[str]:
+    lines = _normalise_setup_block(lines)
+    lines = _normalise_interpreter_guard_block(lines)
+    return _normalise_interpreter_invocations(lines)
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
-    Two classes of line are allowed to differ between the rendered monolith and
-    the v8 source: the file_type enum lines (unified to the six-value superset)
-    and the frontmatter ``description`` line (unified across all platforms for
-    discovery). Every other line must match byte for byte.
+    The generated monolith keeps most v8 text byte-stable, but intentionally
+    replaces Step 1 with the live ``graphify interpreter`` bootstrap. Outside
+    that setup block, only the enum, description, and chunk-cleanup lines may
+    differ.
     """
     if platform.bucket != "monolith":
         return []
@@ -741,18 +784,20 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     rendered = render(platform)[0].content
     original = _normalise(_git_show(platform.roundtrip_ref))
 
-    rendered_lines = rendered.splitlines()
+    rendered_lines = _normalise_monolith_allowed_rewrites(rendered.splitlines())
     # Strip trigger lines from the original before comparing — they are non-spec
     # and their removal (#1180) is a permitted diff. Filter here so the line-count
     # check and the per-line zip both operate on the same reduced set.
-    original_lines = [l for l in original.splitlines() if not _is_trigger_line(l)]
+    original_lines = _normalise_monolith_allowed_rewrites(
+        [l for l in original.splitlines() if not _is_trigger_line(l)]
+    )
 
     problems: list[str] = []
     if len(rendered_lines) != len(original_lines):
         problems.append(
             f"[{platform.key}] line count differs: rendered {len(rendered_lines)} vs v8 {len(original_lines)} "
             "(the only allowed changes are the enum line(s), the description line, "
-            "the chunk-cleanup rewrite, and trigger: removal — none must add or remove other lines)"
+            "the live interpreter rewrites, the chunk-cleanup rewrite, and trigger: removal)"
         )
         return problems
 
