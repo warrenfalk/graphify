@@ -380,6 +380,7 @@ def _rebuild_code(
     follow_symlinks: bool = False,
     force: bool = False,
     no_cluster: bool = False,
+    no_viz: bool = False,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
 ) -> bool:
@@ -437,6 +438,7 @@ def _rebuild_code(
                 follow_symlinks=follow_symlinks,
                 force=force,
                 no_cluster=no_cluster,
+                no_viz=no_viz,
                 acquire_lock=False,
             )
             # Late-arrival drain: another hook may have queued work while we
@@ -454,6 +456,7 @@ def _rebuild_code(
                         follow_symlinks=follow_symlinks,
                         force=force,
                         no_cluster=no_cluster,
+                        no_viz=no_viz,
                         acquire_lock=False,
                     ) and ok
             return ok
@@ -737,7 +740,13 @@ def _rebuild_code(
         # to_html raises ValueError for graphs > MAX_NODES_FOR_VIZ (5000).
         # Wrap so core outputs (graph.json + GRAPH_REPORT.md) always land.
         html_written = False
-        if not no_change:
+        if no_viz:
+            stale = out / "graph.html"
+            if stale.exists():
+                stale.unlink()
+            if not no_change:
+                print("[graphify watch] Skipped graph.html (--no-viz).")
+        elif not no_change:
             try:
                 to_html(G, communities, str(out / "graph.html"), community_labels=labels or None)
                 html_written = True

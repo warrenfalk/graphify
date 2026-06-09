@@ -2139,7 +2139,9 @@ def main() -> None:
         print("    --force                 overwrite graph.json even if the rebuild has fewer nodes")
         print("                            (also: GRAPHIFY_FORCE=1 env var; use after refactors that delete code)")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --no-viz                skip graph.html generation and remove any stale graph.html")
         print("  cluster-only <path>     rerun clustering on an existing graph.json and regenerate report")
+        print("    --force                 overwrite graph.json even if clustering uses fewer nodes")
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
@@ -2181,6 +2183,7 @@ def main() -> None:
         print("    --api-timeout S         per-request timeout in seconds for the LLM client (default: 600)")
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
+        print("    --no-viz                compatibility no-op (extract writes no graph.html)")
         print("    --no-cluster            skip clustering, write raw extraction only")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")
         print("                            maps tables, views, functions + FK relationships;")
@@ -3127,40 +3130,63 @@ def main() -> None:
         # `label` is `cluster-only` that always (re)generates community names with
         # the configured backend, even when a .graphify_labels.json already exists.
         force_relabel = cmd == "label"
-        # Mirror the tree/export arg-parsing pattern: walk argv so flags and
-        # the optional positional path can appear in any order (#724).
-        no_viz = "--no-viz" in sys.argv
-        no_label = "--no-label" in sys.argv
-        _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
-        label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
-        _min_cs_arg = next((a for a in sys.argv if a.startswith("--min-community-size=")), None)
-        min_community_size = int(_min_cs_arg.split("=")[1]) if _min_cs_arg else 3
+        # Walk argv so flags and the optional positional path can appear in any
+        # order (#724), but fail on unknown options so typos do not silently
+        # produce stale or surprising artifacts.
+        no_viz = False
+        no_label = False
+        force = False
+        label_backend: str | None = None
+        min_community_size = 3
         args = sys.argv[2:]
         watch_path: Path | None = None
         graph_override: Path | None = None
         co_resolution: float = 1.0
         co_exclude_hubs: float | None = None
+
+        def _need_cluster_value(name: str, idx: int) -> str:
+            if idx + 1 >= len(args):
+                print(f"error: {name} requires a value", file=sys.stderr)
+                sys.exit(2)
+            return args[idx + 1]
+
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
-            if a == "--graph" and i_arg + 1 < len(args):
-                graph_override = Path(args[i_arg + 1]); i_arg += 2
-            elif a == "--resolution" and i_arg + 1 < len(args):
-                co_resolution = float(args[i_arg + 1]); i_arg += 2
+            if a == "--graph":
+                graph_override = Path(_need_cluster_value("--graph", i_arg)); i_arg += 2
+            elif a.startswith("--graph="):
+                graph_override = Path(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--resolution":
+                co_resolution = float(_need_cluster_value("--resolution", i_arg)); i_arg += 2
             elif a.startswith("--resolution="):
                 co_resolution = float(a.split("=", 1)[1]); i_arg += 1
-            elif a == "--exclude-hubs" and i_arg + 1 < len(args):
-                co_exclude_hubs = float(args[i_arg + 1]); i_arg += 2
+            elif a == "--exclude-hubs":
+                co_exclude_hubs = float(_need_cluster_value("--exclude-hubs", i_arg)); i_arg += 2
             elif a.startswith("--exclude-hubs="):
                 co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
-            elif a == "--no-viz" or a.startswith("--min-community-size="):
-                i_arg += 1
+            elif a == "--backend":
+                label_backend = _need_cluster_value("--backend", i_arg); i_arg += 2
+            elif a.startswith("--backend="):
+                label_backend = a.split("=", 1)[1]; i_arg += 1
+            elif a == "--min-community-size":
+                min_community_size = int(_need_cluster_value("--min-community-size", i_arg)); i_arg += 2
+            elif a.startswith("--min-community-size="):
+                min_community_size = int(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--no-viz":
+                no_viz = True; i_arg += 1
+            elif a == "--no-label":
+                no_label = True; i_arg += 1
+            elif a == "--force":
+                force = True; i_arg += 1
             elif a.startswith("--"):
-                i_arg += 1
+                print(f"error: unknown {cmd} option: {a}", file=sys.stderr)
+                sys.exit(2)
             elif watch_path is None:
                 watch_path = Path(a); i_arg += 1
             else:
-                i_arg += 1
+                print(f"error: {cmd} accepts at most one path argument", file=sys.stderr)
+                sys.exit(2)
         if watch_path is None:
             watch_path = Path(".")
         graph_json = graph_override if graph_override is not None else watch_path / "graphify-out" / "graph.json"
@@ -3262,7 +3288,7 @@ def main() -> None:
             except Exception:
                 existing_output_data = {}
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
-        if not _check_shrink(False, existing_output_data, candidate_graph_data, tmp=graph_tmp):
+        if not _check_shrink(force, existing_output_data, candidate_graph_data, tmp=graph_tmp):
             print(
                 "error: cluster-only refused to shrink graph.json; "
                 "GRAPH_REPORT.md and .graphify_labels.json were left untouched.",
@@ -3298,6 +3324,7 @@ def main() -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        no_viz = False
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -3306,6 +3333,9 @@ def main() -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--no-viz":
+                no_viz = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -3333,7 +3363,13 @@ def main() -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        ok = _rebuild_code(
+            watch_path,
+            force=force,
+            no_cluster=no_cluster,
+            no_viz=no_viz,
+            block_on_lock=True,
+        )
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -3892,7 +3928,7 @@ def main() -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
-                "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
+                "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-viz] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN]",
                 file=sys.stderr,
@@ -3915,6 +3951,7 @@ def main() -> None:
         out_dir: Path | None = None
         cli_postgres_dsn: str | None = None
         no_cluster = False
+        no_viz = False
         dedup_llm = False
         google_workspace = False
         global_merge = False
@@ -3951,70 +3988,82 @@ def main() -> None:
                 sys.exit(2)
             return v
 
+        def _need_extract_value(name: str, idx: int) -> str:
+            if idx + 1 >= len(args):
+                print(f"error: {name} requires a value", file=sys.stderr)
+                sys.exit(2)
+            return args[idx + 1]
+
         args = sys.argv[3:] if has_path else sys.argv[2:]
         i = 0
         while i < len(args):
             a = args[i]
-            if a == "--backend" and i + 1 < len(args):
-                backend = args[i + 1]; i += 2
+            if a == "--backend":
+                backend = _need_extract_value("--backend", i); i += 2
             elif a.startswith("--backend="):
                 backend = a.split("=", 1)[1]; i += 1
-            elif a == "--model" and i + 1 < len(args):
-                model = args[i + 1]; i += 2
+            elif a == "--model":
+                model = _need_extract_value("--model", i); i += 2
             elif a.startswith("--model="):
                 model = a.split("=", 1)[1]; i += 1
-            elif a == "--mode" and i + 1 < len(args):
-                extract_mode = args[i + 1]; i += 2
+            elif a == "--mode":
+                extract_mode = _need_extract_value("--mode", i); i += 2
             elif a.startswith("--mode="):
                 extract_mode = a.split("=", 1)[1]; i += 1
-            elif a == "--out" and i + 1 < len(args):
-                out_dir = Path(args[i + 1]); i += 2
+            elif a == "--out":
+                out_dir = Path(_need_extract_value("--out", i)); i += 2
             elif a.startswith("--out="):
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--no-viz":
+                no_viz = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--google-workspace":
                 google_workspace = True; i += 1
             elif a == "--global":
                 global_merge = True; i += 1
-            elif a == "--as" and i + 1 < len(args):
-                global_repo_tag = args[i + 1]; i += 2
-            elif a == "--max-workers" and i + 1 < len(args):
-                cli_max_workers = _parse_int("--max-workers", args[i + 1]); i += 2
+            elif a == "--as":
+                global_repo_tag = _need_extract_value("--as", i); i += 2
+            elif a == "--max-workers":
+                cli_max_workers = _parse_int("--max-workers", _need_extract_value("--max-workers", i)); i += 2
             elif a.startswith("--max-workers="):
                 cli_max_workers = _parse_int("--max-workers", a.split("=", 1)[1]); i += 1
-            elif a == "--token-budget" and i + 1 < len(args):
-                cli_token_budget = _parse_int("--token-budget", args[i + 1]); i += 2
+            elif a == "--token-budget":
+                cli_token_budget = _parse_int("--token-budget", _need_extract_value("--token-budget", i)); i += 2
             elif a.startswith("--token-budget="):
                 cli_token_budget = _parse_int("--token-budget", a.split("=", 1)[1]); i += 1
-            elif a == "--max-concurrency" and i + 1 < len(args):
-                cli_max_concurrency = _parse_int("--max-concurrency", args[i + 1]); i += 2
+            elif a == "--max-concurrency":
+                cli_max_concurrency = _parse_int("--max-concurrency", _need_extract_value("--max-concurrency", i)); i += 2
             elif a.startswith("--max-concurrency="):
                 cli_max_concurrency = _parse_int("--max-concurrency", a.split("=", 1)[1]); i += 1
-            elif a == "--api-timeout" and i + 1 < len(args):
-                cli_api_timeout = _parse_float("--api-timeout", args[i + 1]); i += 2
+            elif a == "--api-timeout":
+                cli_api_timeout = _parse_float("--api-timeout", _need_extract_value("--api-timeout", i)); i += 2
             elif a.startswith("--api-timeout="):
                 cli_api_timeout = _parse_float("--api-timeout", a.split("=", 1)[1]); i += 1
-            elif a == "--resolution" and i + 1 < len(args):
-                cli_resolution = _parse_float("--resolution", args[i + 1]); i += 2
+            elif a == "--resolution":
+                cli_resolution = _parse_float("--resolution", _need_extract_value("--resolution", i)); i += 2
             elif a.startswith("--resolution="):
                 cli_resolution = _parse_float("--resolution", a.split("=", 1)[1]); i += 1
-            elif a == "--exclude-hubs" and i + 1 < len(args):
-                cli_exclude_hubs = float(args[i + 1]); i += 2
+            elif a == "--exclude-hubs":
+                cli_exclude_hubs = _parse_float("--exclude-hubs", _need_extract_value("--exclude-hubs", i)); i += 2
             elif a.startswith("--exclude-hubs="):
-                cli_exclude_hubs = float(a.split("=", 1)[1]); i += 1
-            elif a == "--exclude" and i + 1 < len(args):
-                cli_excludes.append(args[i + 1]); i += 2
+                cli_exclude_hubs = _parse_float("--exclude-hubs", a.split("=", 1)[1]); i += 1
+            elif a == "--exclude":
+                cli_excludes.append(_need_extract_value("--exclude", i)); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
-            elif a == "--postgres" and i + 1 < len(args):
-                cli_postgres_dsn = args[i + 1]; i += 2
+            elif a == "--postgres":
+                cli_postgres_dsn = _need_extract_value("--postgres", i); i += 2
             elif a.startswith("--postgres="):
                 cli_postgres_dsn = a.split("=", 1)[1]; i += 1
+            elif a.startswith("-"):
+                print(f"error: unknown extract option: {a}", file=sys.stderr)
+                sys.exit(2)
             else:
-                i += 1
+                print(f"error: unexpected extract argument: {a}", file=sys.stderr)
+                sys.exit(2)
 
         if not has_path and cli_postgres_dsn is None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
