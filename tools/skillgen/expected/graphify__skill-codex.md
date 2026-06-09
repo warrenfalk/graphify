@@ -63,6 +63,12 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ### Step 1 - Ensure graphify is installed
 
 ```bash
+# If a graphify command is already installed, treat it as the source of truth.
+# Nix-installed graphify is self-contained; use `graphify doctor` to inspect the
+# package and `graphify extract INPUT_PATH --local-only --no-viz` for keyless
+# local graphs. Do not use system Python, pip, or uv for normal installed-package
+# operation.
+
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
 PYTHON=""
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)
@@ -231,6 +237,11 @@ Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-2
 > **Codex platform:** Uses `spawn_agent` + `wait_agent` + `close_agent` instead of the Agent tool.
 > Requires `multi_agent = true` under `[features]` in `~/.codex/config.toml`.
 > If `spawn_agent` is unavailable, tell the user to add that config and restart Codex.
+
+Semantic mode distinction:
+- **Standalone CLI:** `graphify extract INPUT_PATH` runs inside the installed graphify package. Semantic extraction uses installed backend SDKs plus provider credentials; it cannot call Codex subagents.
+- **Codex skill:** this skill may use `spawn_agent` for semantic extraction, so it can process docs/papers/images without separate graphify API keys. That is a Codex runtime capability, not a standalone CLI feature.
+- For a local keyless CLI graph, run `graphify extract INPUT_PATH --local-only --no-viz`; use `graphify update INPUT_PATH --no-viz` for existing graphs.
 
 Call `spawn_agent` once per chunk — ALL in the same response so they run in parallel. Build the message by wrapping the extraction prompt in task-delegation framing:
 

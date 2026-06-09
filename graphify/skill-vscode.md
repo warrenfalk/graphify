@@ -63,6 +63,12 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ### Step 1 - Ensure graphify is installed
 
 ```bash
+# If a graphify command is already installed, treat it as the source of truth.
+# Nix-installed graphify is self-contained; use `graphify doctor` to inspect the
+# package and `graphify extract INPUT_PATH --local-only --no-viz` for keyless
+# local graphs. Do not use system Python, pip, or uv for normal installed-package
+# operation.
+
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
 PYTHON=""
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)

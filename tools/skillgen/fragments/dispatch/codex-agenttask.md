@@ -4,6 +4,11 @@
 > Requires `multi_agent = true` under `[features]` in `~/.codex/config.toml`.
 > If `spawn_agent` is unavailable, tell the user to add that config and restart Codex.
 
+Semantic mode distinction:
+- **Standalone CLI:** `graphify extract INPUT_PATH` runs inside the installed graphify package. Semantic extraction uses installed backend SDKs plus provider credentials; it cannot call Codex subagents.
+- **Codex skill:** this skill may use `spawn_agent` for semantic extraction, so it can process docs/papers/images without separate graphify API keys. That is a Codex runtime capability, not a standalone CLI feature.
+- For a local keyless CLI graph, run `graphify extract INPUT_PATH --local-only --no-viz`; use `graphify update INPUT_PATH --no-viz` for existing graphs.
+
 Call `spawn_agent` once per chunk — ALL in the same response so they run in parallel. Build the message by wrapping the extraction prompt in task-delegation framing:
 
 ```
