@@ -530,8 +530,17 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
         data["built_at_commit"] = commit
-    with open(output_path, "w", encoding="utf-8") as f:  # nosec
-        json.dump(data, f, indent=2)
+    existing_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = existing_path.with_name(f".{existing_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:  # nosec
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, existing_path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return True
 
 

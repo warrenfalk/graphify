@@ -362,6 +362,17 @@ def _json_text(data: dict) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -606,7 +617,7 @@ def _rebuild_code(
                     had_explicit_deletions=bool(deleted_paths),
                 ):
                     return False
-                existing_graph.write_text(candidate_graph_text, encoding="utf-8")
+                _atomic_write_text(existing_graph, candidate_graph_text)
 
             try:
                 from graphify.detect import save_manifest
@@ -714,8 +725,8 @@ def _rebuild_code(
             from graphify.export import backup_if_protected as _backup
             _backup(out)
             graph_tmp.replace(existing_graph)
-            report_path.write_text(report, encoding="utf-8")
-            labels_file.write_text(labels_json, encoding="utf-8")
+            _atomic_write_text(report_path, report)
+            _atomic_write_text(labels_file, labels_json)
 
         try:
             from graphify.detect import save_manifest

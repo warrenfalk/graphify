@@ -91,6 +91,19 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
         sys.exit(1)
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _check_skill_version(skill_dst: Path) -> None:
     """Warn if the installed skill is from an older graphify version."""
     version_file = skill_dst.parent / ".graphify_version"
@@ -3167,6 +3180,8 @@ def main() -> None:
         )
         from graphify.report import generate
         from graphify.export import to_json, to_html
+        from graphify.security import check_graph_file_size_cap
+        from graphify.watch import _check_shrink
 
         print("Loading existing graph...")
         _enforce_graph_size_cap_or_exit(graph_json)
@@ -3196,9 +3211,15 @@ def main() -> None:
         labels_path = out / ".graphify_labels.json"
         if labels_path.exists() and not force_relabel:
             try:
-                labels = {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
+                labels = {
+                    int(k): v
+                    for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()
+                    if int(k) in communities
+                }
             except Exception:
                 labels = {cid: f"Community {cid}" for cid in communities}
+            for cid in communities:
+                labels.setdefault(cid, f"Community {cid}")
         elif no_label and not force_relabel:
             labels = {cid: f"Community {cid}" for cid in communities}
         else:
@@ -3221,11 +3242,39 @@ def main() -> None:
                           {"warning": "cluster-only mode — file stats not available"},
                           tokens, str(watch_path), suggested_questions=questions,
                           min_community_size=min_community_size, built_at_commit=_commit)
-        (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
+        labels_json = json.dumps(
+            {str(k): v for k, v in sorted(labels.items())},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+        output_graph = out / "graph.json"
+        graph_tmp = out / ".graph.tmp.json"
+        json_written = to_json(G, communities, str(graph_tmp), force=True)
+        if not json_written:
+            print("error: failed to stage graph.json", file=sys.stderr)
+            sys.exit(1)
+
+        existing_output_data: dict = {}
+        if output_graph.exists():
+            try:
+                check_graph_file_size_cap(output_graph)
+                existing_output_data = json.loads(output_graph.read_text(encoding="utf-8"))
+            except Exception:
+                existing_output_data = {}
+        candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
+        if not _check_shrink(False, existing_output_data, candidate_graph_data, tmp=graph_tmp):
+            print(
+                "error: cluster-only refused to shrink graph.json; "
+                "GRAPH_REPORT.md and .graphify_labels.json were left untouched.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         from graphify.export import backup_if_protected as _backup
         _backup(out)
-        to_json(G, communities, str(out / "graph.json"))
-        labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
+        graph_tmp.replace(output_graph)
+        _atomic_write_text(out / "GRAPH_REPORT.md", report)
+        _atomic_write_text(labels_path, labels_json)
 
         # Mirror watch.py pattern: gate to_html so core outputs (graph.json +
         # GRAPH_REPORT.md) always land. Honor --no-viz explicitly; otherwise
