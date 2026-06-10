@@ -147,13 +147,13 @@ else:
 
 #### Part B - Semantic extraction (parallel subagents)
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do.
+**Fast path:** If detection found zero docs, papers, images, and no transcript sidecars (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do.
 
 **MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
 
 Before dispatching subagents, print a timing estimate:
 - Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25)
+- Estimate agents needed: `ceil(uncached_semantic_files / 22)` (chunk size is 20-25)
 - Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
 - Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
 
@@ -168,14 +168,19 @@ from graphify.cache import check_semantic_cache
 from pathlib import Path
 
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-all_files = [f for files in detect['files'].values() for f in files]
+semantic_files = []
+for key in ('document', 'paper', 'image'):
+    semantic_files.extend(detect.get('files', {}).get(key, []))
+transcripts_path = Path('graphify-out/.graphify_transcripts.json')
+if transcripts_path.exists():
+    semantic_files.extend(json.loads(transcripts_path.read_text(encoding=\"utf-8\")))
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files)
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(semantic_files)
 
 if cached_nodes or cached_edges or cached_hyperedges:
     Path('graphify-out/.graphify_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}, ensure_ascii=False), encoding=\"utf-8\")
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
-print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
+print(f'Cache: {len(semantic_files)-len(uncached)} semantic files hit, {len(uncached)} need extraction')
 "
 ```
 

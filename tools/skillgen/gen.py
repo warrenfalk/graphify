@@ -753,6 +753,20 @@ def _normalise_interpreter_guard_block(lines: list[str]) -> list[str]:
     return lines[: start + 1] + ["__GRAPHIFY_INTERPRETER_GUARD_BLOCK__"] + lines[end:]
 
 
+def _normalise_semantic_cache_block(lines: list[str]) -> list[str]:
+    """Collapse the intentionally replaced Step B0 semantic-cache file selection."""
+    start_marker = "**Step B0 - Check extraction cache first**"
+    end_marker = "**Step B1 - Split into chunks**"
+    try:
+        start = lines.index(start_marker)
+        end = lines.index(end_marker)
+    except ValueError:
+        return lines
+    if start >= end:
+        return lines
+    return lines[: start + 1] + ["__GRAPHIFY_SEMANTIC_CACHE_BLOCK__"] + lines[end:]
+
+
 def _normalise_interpreter_invocations(lines: list[str]) -> list[str]:
     """Treat old cached-python and new live-interpreter command lines as equivalent."""
     return [
@@ -762,9 +776,22 @@ def _normalise_interpreter_invocations(lines: list[str]) -> list[str]:
     ]
 
 
+def _normalise_semantic_cache_prose(lines: list[str]) -> list[str]:
+    """Treat the semantic-only cache wording rewrite as an allowed monolith diff."""
+    return [
+        line.replace(
+            "zero docs, papers, images, and no transcript sidecars",
+            "zero docs, papers, and images",
+        ).replace("uncached_semantic_files", "uncached_non_code_files")
+        for line in lines
+    ]
+
+
 def _normalise_monolith_allowed_rewrites(lines: list[str]) -> list[str]:
     lines = _normalise_setup_block(lines)
     lines = _normalise_interpreter_guard_block(lines)
+    lines = _normalise_semantic_cache_block(lines)
+    lines = _normalise_semantic_cache_prose(lines)
     return _normalise_interpreter_invocations(lines)
 
 
@@ -772,9 +799,9 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
     The generated monolith keeps most v8 text byte-stable, but intentionally
-    replaces Step 1 with the live ``graphify interpreter`` bootstrap. Outside
-    that setup block, only the enum, description, and chunk-cleanup lines may
-    differ.
+    replaces Step 1 with the live ``graphify interpreter`` bootstrap and Step B0
+    with semantic-only cache selection. Outside those rewrites, only the enum,
+    description, and chunk-cleanup lines may differ.
     """
     if platform.bucket != "monolith":
         return []
@@ -797,7 +824,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
         problems.append(
             f"[{platform.key}] line count differs: rendered {len(rendered_lines)} vs v8 {len(original_lines)} "
             "(the only allowed changes are the enum line(s), the description line, "
-            "the live interpreter rewrites, the chunk-cleanup rewrite, and trigger: removal)"
+            "the live interpreter rewrites, semantic-cache rewrite, chunk-cleanup rewrite, "
+            "and trigger: removal)"
         )
         return problems
 

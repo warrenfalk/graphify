@@ -304,6 +304,24 @@ def test_codex_skill_is_cli_first_for_installed_nix_commands():
     assert "pip install graphifyy" not in core
 
 
+def test_semantic_cache_check_excludes_code_files():
+    """Step B0 must cache-check only semantic inputs; AST already handles code."""
+    platforms = gen.load_platforms()
+    for key in ("codex", "aider", "devin"):
+        core = gen.render(platforms[key])[0].content
+        b0 = core[core.index("**Step B0"):core.index("**Step B1")]
+        assert "semantic_files = []" in b0, f"[{key}] missing semantic-only file list"
+        assert "for key in ('document', 'paper', 'image')" in b0, (
+            f"[{key}] must enumerate semantic file categories explicitly"
+        )
+        assert "graphify_transcripts.json" in b0, f"[{key}] must include transcript sidecars"
+        assert "check_semantic_cache(semantic_files)" in b0, (
+            f"[{key}] must not cache-check all detected files"
+        )
+        assert "detect['files'].values()" not in b0, f"[{key}] would include code files"
+        assert "all_files = " not in b0, f"[{key}] uses misleading all_files naming"
+
+
 def test_codex_and_windows_unify_enum_to_six_values():
     """codex (was 4-value) and windows (was 5-value) now carry the superset."""
     for key in ("codex", "windows"):
@@ -470,10 +488,11 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
 def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
     """The rendered monolith differs from v8 on exactly the allowed lines.
 
-    The Step 1 setup block is intentionally replaced with the live
-    `graphify interpreter` flow. Outside that block, three line-level changes
-    are allowed: the file_type enum superset, the unified frontmatter
-    description, and the shell-agnostic chunk-cleanup rewrite (#1172).
+    The Step 1 setup block, Step B0 semantic-cache block, and related
+    semantic-cache prose are intentionally replaced. Outside those rewrites,
+    three line-level changes are allowed: the file_type enum superset, the
+    unified frontmatter description, and the shell-agnostic chunk-cleanup
+    rewrite (#1172).
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
