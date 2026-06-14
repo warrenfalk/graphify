@@ -126,7 +126,10 @@ Then act on it:
   - Filter out any path that starts with `scan_root + "/graphify-out/"` to exclude converted sidecars.
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
   - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
-  - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
+  - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Also accept exclusion answers such as "everything except migrations", "exclude migrations", or "not migrations".
+  - If the user chooses a subfolder, rerun Step 2 on that subfolder.
+  - If the user chooses an exclusion scope, convert each excluded top-level name to an `extra_excludes` pattern (for example `migrations` -> `migrations/`), rerun detection on the original INPUT_PATH with `detect(Path('INPUT_PATH'), extra_excludes=[...])`, overwrite `graphify-out/.graphify_detect.json`, and write `graphify-out/.graphify_scope.json` with the original input path, the user answer, and the `extra_excludes` list. Show the new clean summary and proceed with that confirmed scope; do not ask to narrow again just because it is still above the large-corpus threshold.
+  - Treat this exclusion scope as first-class for the rest of the run: AST extraction, semantic planning, and manifest saving must use the new detect JSON produced with `extra_excludes`.
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
 
 ### Step 2.5 - Video and audio (only if video files detected)
@@ -213,13 +216,15 @@ Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt
 
 **Step B1 - Split into chunks**
 
+Before creating a new chunk plan, delete stale semantic chunk result files from prior aborted runs: `find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null`. Do this before dispatching any workers so Step B3 cannot merge stale data.
+
 Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
 
-After splitting, write the exact chunk plan to `graphify-out/.graphify_chunk_plan.json` as a JSON array of file-list arrays. Use this planned chunk count for estimates and dispatch. Do not estimate agents from uncached semantic file count alone because the one-image-per-chunk rule can make the actual chunk count much larger.
+After splitting, write the exact chunk plan to `graphify-out/.graphify_chunks.json` as a JSON array of file-list arrays. Use this planned chunk count for estimates and dispatch. Do not estimate agents from uncached semantic file count alone because the one-image-per-chunk rule can make the actual chunk count much larger. Do not name this plan `graphify-out/.graphify_chunk_plan.json`: that name collides with the `.graphify_chunk_*.json` merge glob used for real extraction results.
 
 Before dispatching subagents, print a timing estimate from the chunk plan:
 - Load uncached file count from `graphify-out/.graphify_uncached.txt`
-- Load planned chunk count from `graphify-out/.graphify_chunk_plan.json`
+- Load planned chunk count from `graphify-out/.graphify_chunks.json`
 - Estimate time as ~45s per batch: `45 * ceil(planned_chunks / parallel_limit)`, where `parallel_limit` is the batch/concurrency limit in Step B2 for the current platform.
 - Print: "Semantic extraction: N files -> C chunks, estimated ~Ys"
 
@@ -234,7 +239,9 @@ Semantic mode distinction:
 - **Codex skill:** this skill may use `spawn_agent` for semantic extraction, so it can process docs/papers/images without separate graphify API keys. That is a Codex runtime capability, not a standalone CLI feature.
 - For a local keyless CLI graph, run `graphify extract INPUT_PATH --local-only --no-viz`; use `graphify update INPUT_PATH --no-viz` for existing graphs.
 
-Load `graphify-out/.graphify_chunk_plan.json` and process it in bounded batches. Default to `CODEX_AGENT_BATCH_SIZE = 6`; lower it if `spawn_agent` reports a thread-limit error. Never try to spawn every chunk at once.
+Load `graphify-out/.graphify_chunks.json` and process it in bounded batches. Default to `CODEX_AGENT_BATCH_SIZE = 6`; lower it if `spawn_agent` reports a thread-limit error. Never try to spawn every chunk at once.
+
+Codex workers must write results as durable files, not return JSON inline. For chunk N, derive an absolute `CHUNK_PATH` under the current project root, e.g. `${PROJECT_ROOT}/graphify-out/.graphify_chunk_NN.json`. The worker writes the full JSON there; its final chat response must be a short status line only, with counts, and must never include the full JSON payload.
 
 For each batch:
 1. Call `spawn_agent` once per chunk in the batch, in the same response, so only that batch runs in parallel.
@@ -245,23 +252,23 @@ For each batch:
 Build each worker message by wrapping the extraction prompt in task-delegation framing:
 
 ```
-spawn_agent(agent_type="worker", message="Your task is to perform the following. Follow the instructions below exactly.\n\n<agent-instructions>\n[extraction prompt, with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE substituted]\n</agent-instructions>\n\nExecute this now. Output ONLY the structured JSON response.")
+spawn_agent(agent_type="worker", message="Your task is to perform the following. Follow the instructions below exactly.\n\n<agent-instructions>\n[extraction prompt, with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, and DEEP_MODE substituted]\n\nCodex handoff override: do NOT return the JSON in chat. Validate that your extraction is valid JSON with top-level nodes, edges, hyperedges, input_tokens, and output_tokens. Write it atomically to CHUNK_PATH: write a temporary file next to CHUNK_PATH, then rename it to CHUNK_PATH. Your final response must be only: wrote CHUNK_NUM to CHUNK_PATH with N nodes, E edges, H hyperedges.\n</agent-instructions>\n\nExecute this now.")
 ```
 
 For each spawned handle, collect results sequentially in memory before starting the next batch:
 ```
-result = wait_agent(handle); close_agent(handle)   # repeat per handle
+result = wait_agent(handle); close_agent(handle)   # repeat per handle; result should be a short status, not JSON
 ```
 
-Parse each result as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. Codex collects in memory, so there are no per-chunk files on disk; the disk-based success checks in Step B3 do not apply — a chunk that returns invalid JSON is the failure signal instead.
+Do not parse worker chat responses as JSON. Step B3 reads and validates the `graphify-out/.graphify_chunk_NN.json` files from disk. If a worker returns full JSON inline, ignore that inline payload and require the chunk file.
 
 Subagent prompt template:
 
-See `references/extraction-spec.md` for the compact subagent prompt (rules, node-ID format, confidence rubric, hyperedge and vision rules, JSON schema). Load it only here, only when at least one chunk holds a doc, paper, or image; a pure-code corpus has skipped Part B and never reads it. Pass each agent that prompt verbatim with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, and DEEP_MODE substituted, and have it return the JSON inline.
+See `references/extraction-spec.md` for the compact subagent prompt (rules, node-ID format, confidence rubric, hyperedge and vision rules, JSON schema). Load it only here, only when at least one chunk holds a doc, paper, or image; a pure-code corpus has skipped Part B and never reads it. Pass each agent that prompt verbatim with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE, and CHUNK_PATH substituted, plus the Codex handoff override above so the worker writes CHUNK_PATH and returns only a short status.
 
 **Step B3 - Collect, cache, and merge**
 
-Wait for all subagents. For each result:
+After subagents finish, validate their durable chunk files. For each planned chunk:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
 - If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
@@ -269,7 +276,7 @@ Wait for all subagents. For each result:
 
 If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
 
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
+Merge all valid chunk files into `.graphify_semantic_new.json`. For host tools that expose real token counts in the subagent result's `usage` field, write those counts back into the chunk JSON before merging; otherwise keep the chunk's placeholder zeros. Then run:
 ```bash
 $(graphify interpreter) -c "
 import json, glob

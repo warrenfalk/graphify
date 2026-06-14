@@ -270,14 +270,15 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
-def test_codex_dispatch_is_agenttask_and_collects_in_memory():
-    """codex: spawn/wait/close_agent dispatch needing multi_agent = true."""
+def test_codex_dispatch_is_agenttask_and_writes_chunk_files():
+    """codex: spawn/wait/close_agent dispatch with durable chunk-file handoff."""
     core, _ = _platform_artifacts("codex")
     assert "spawn_agent" in core
     assert "wait_agent" in core
     assert "close_agent" in core
     assert "multi_agent = true" in core
-    assert "Codex collects in memory" in core
+    assert "Codex collects in memory" not in core
+    assert "graphify-out/.graphify_chunk_NN.json" in core
     # The B2 dispatch slot itself (Codex heading -> Step B3) must not carry the
     # claude Agent-tool example. The shared Step B3 prose mentions the agent type
     # in a re-run hint, so scope the check to the dispatch block only.
@@ -290,6 +291,12 @@ def test_codex_dispatch_is_agenttask_and_collects_in_memory():
     assert "Never try to spawn every chunk at once" in b2
     assert "Dispatch ALL subagents" not in b2
     assert "ALL in the same response" not in b2
+    assert "CHUNK_PATH" in b2
+    assert "write a temporary file" in b2
+    assert "rename it to CHUNK_PATH" in b2
+    assert "must never include the full JSON payload" in b2
+    assert "Do not parse worker chat responses as JSON" in b2
+    assert "have it return the JSON inline" not in b2
 
 
 def test_codex_skill_distinguishes_standalone_cli_from_skill_subagents():
@@ -328,6 +335,29 @@ def test_semantic_cache_check_excludes_code_files():
         assert "all_files = " not in b0, f"[{key}] uses misleading all_files naming"
 
 
+def test_large_corpus_scope_accepts_exclusion_answers():
+    """Large-corpus narrowing must support 'everything except X' scopes."""
+    platforms = gen.load_platforms()
+    for key, platform in platforms.items():
+        if platform.bucket != "split":
+            continue
+        core = gen.render(platform)[0].content
+        start = core.index("compute the top 5 first-level subdirectories")
+        end = core.index("- Otherwise: proceed directly", start)
+        block = core[start:end]
+        assert "everything except migrations" in block, f"[{key}] must show exclude examples"
+        assert "extra_excludes" in block, f"[{key}] must rerun detect with excludes"
+        assert "migrations` -> `migrations/`" in block, (
+            f"[{key}] must normalize excluded top-level directories"
+        )
+        assert "graphify-out/.graphify_scope.json" in block, (
+            f"[{key}] must persist the confirmed exclusion scope"
+        )
+        assert "do not ask to narrow again" in block, (
+            f"[{key}] must respect the confirmed broad-minus-excludes scope"
+        )
+
+
 def test_split_skill_estimates_from_planned_chunks_not_file_count():
     """Image-per-chunk splitting means estimates must use the real chunk plan."""
     platforms = gen.load_platforms()
@@ -336,8 +366,20 @@ def test_split_skill_estimates_from_planned_chunks_not_file_count():
             continue
         core = gen.render(platform)[0].content
         b1 = core[core.index("**Step B1"):core.index("**Step B2")]
-        assert "graphify-out/.graphify_chunk_plan.json" in b1, (
+        assert "delete stale semantic chunk result files" in b1, (
+            f"[{key}] must clean stale chunk results before dispatch"
+        )
+        assert "find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete" in b1, (
+            f"[{key}] must remove stale .graphify_chunk_NN.json files"
+        )
+        assert "graphify-out/.graphify_chunks.json" in b1, (
             f"[{key}] must persist the actual semantic chunk plan"
+        )
+        assert "Do not name this plan `graphify-out/.graphify_chunk_plan.json`" in b1, (
+            f"[{key}] must explicitly reject the unsafe chunk plan filename"
+        )
+        assert "collides with the `.graphify_chunk_*.json` merge glob" in b1, (
+            f"[{key}] must document why the old chunk plan filename is unsafe"
         )
         assert "one-image-per-chunk rule" in b1, (
             f"[{key}] must explain why file-count estimates are wrong"
