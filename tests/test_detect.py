@@ -1,7 +1,21 @@
 from pathlib import Path
+
+import pytest
+
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def isolate_git_user_config(tmp_path, monkeypatch):
+    """Keep Git user excludes from the developer machine out of detector tests."""
+    gitconfig = tmp_path / "empty-gitconfig"
+    gitconfig.write_text("")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 def test_classify_python():
     assert classify_file(Path("foo.py")) == FileType.CODE
@@ -785,6 +799,29 @@ def test_graphifyignore_takes_precedence_over_gitignore(tmp_path):
     code = result["files"]["code"]
     assert any("main.py" in f for f in code)       # gitignore NOT applied
     assert not any("other.py" in f for f in code)  # graphifyignore IS applied
+
+
+def test_detect_honors_git_core_excludesfile(tmp_path, monkeypatch):
+    """Git user excludes such as ~/.mygitignore are honored inside repos."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    user_excludes = tmp_path / ".mygitignore"
+    user_excludes.write_text("local-tools/\n")
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(f"[core]\n\texcludesFile = {user_excludes}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+
+    (repo / "app.py").write_text("x = 1")
+    script_dir = repo / "local-tools" / "bin"
+    script_dir.mkdir(parents=True)
+    (script_dir / "redbook-restore-prod").write_text("#!/usr/bin/env bash\n")
+
+    result = detect(repo)
+    code = result["files"]["code"]
+    assert any("app.py" in f for f in code)
+    assert not any("local-tools" in f for f in code)
 
 
 # Regression tests for #947 - .worktrees/ skipped and --exclude flag

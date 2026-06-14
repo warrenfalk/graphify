@@ -284,6 +284,12 @@ def test_codex_dispatch_is_agenttask_and_collects_in_memory():
     b2 = core[core.index("**Step B2"):core.index("**Step B3")]
     assert "Concrete example for 3 chunks" not in b2
     assert "Agent tool call 1" not in b2
+    assert "bounded batches" in b2
+    assert "CODEX_AGENT_BATCH_SIZE = 6" in b2
+    assert "thread-limit error" in b2
+    assert "Never try to spawn every chunk at once" in b2
+    assert "Dispatch ALL subagents" not in b2
+    assert "ALL in the same response" not in b2
 
 
 def test_codex_skill_distinguishes_standalone_cli_from_skill_subagents():
@@ -320,6 +326,43 @@ def test_semantic_cache_check_excludes_code_files():
         )
         assert "detect['files'].values()" not in b0, f"[{key}] would include code files"
         assert "all_files = " not in b0, f"[{key}] uses misleading all_files naming"
+
+
+def test_split_skill_estimates_from_planned_chunks_not_file_count():
+    """Image-per-chunk splitting means estimates must use the real chunk plan."""
+    platforms = gen.load_platforms()
+    for key, platform in platforms.items():
+        if platform.bucket != "split":
+            continue
+        core = gen.render(platform)[0].content
+        b1 = core[core.index("**Step B1"):core.index("**Step B2")]
+        assert "graphify-out/.graphify_chunk_plan.json" in b1, (
+            f"[{key}] must persist the actual semantic chunk plan"
+        )
+        assert "one-image-per-chunk rule" in b1, (
+            f"[{key}] must explain why file-count estimates are wrong"
+        )
+        assert "planned chunk count" in b1, f"[{key}] must estimate from planned chunks"
+        assert "ceil(uncached_semantic_files / 22)" not in b1, (
+            f"[{key}] must not use the old file-count heuristic"
+        )
+
+
+def test_large_corpus_subdir_guidance_uses_raw_detect_paths():
+    """Top-subdir narrowing must not resolve symlinked detector paths."""
+    platforms = gen.load_platforms()
+    for key, platform in platforms.items():
+        if platform.bucket != "split":
+            continue
+        core = gen.render(platform)[0].content
+        start = core.index("compute the top 5 first-level subdirectories")
+        end = core.index("- Otherwise: proceed directly", start)
+        block = core[start:end]
+        assert "raw path strings from all file lists" in block, f"[{key}] must use detector strings"
+        assert "Do not call `Path.resolve()`" in block, f"[{key}] must avoid resolving paths"
+        assert "symlink targets may resolve outside the scan root" in block, (
+            f"[{key}] must explain why resolving is wrong"
+        )
 
 
 def test_codex_and_windows_unify_enum_to_six_values():

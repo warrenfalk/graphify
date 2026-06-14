@@ -121,7 +121,8 @@ Then act on it:
 - If `skipped_sensitive` is non-empty: mention file count skipped, not the file names.
 - If `total_words` > 2,000,000 OR `total_files` > 500: show the warning. Then compute the top 5 first-level subdirectories by file count:
   - Read `scan_root` from the detect JSON (always an absolute path to the resolved INPUT_PATH).
-  - Concatenate all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
+  - Concatenate the raw path strings from all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
+  - Do not call `Path.resolve()`, `realpath`, or equivalent on detected file paths before stripping `scan_root`; symlink targets may resolve outside the scan root even though the detector path is inside it.
   - Filter out any path that starts with `scan_root + "/graphify-out/"` to exclude converted sidecars.
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
   - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
@@ -181,12 +182,6 @@ else:
 
 **MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
 
-Before dispatching subagents, print a timing estimate:
-- Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_semantic_files / 22)` (chunk size is 20-25)
-- Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
-- Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
-
 **Step B0 - Check extraction cache first**
 
 Before dispatching any subagents, check which files already have cached extraction results:
@@ -220,7 +215,15 @@ Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt
 
 Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
 
-**Step B2 - Dispatch ALL subagents in a single message (Codex)**
+After splitting, write the exact chunk plan to `graphify-out/.graphify_chunk_plan.json` as a JSON array of file-list arrays. Use this planned chunk count for estimates and dispatch. Do not estimate agents from uncached semantic file count alone because the one-image-per-chunk rule can make the actual chunk count much larger.
+
+Before dispatching subagents, print a timing estimate from the chunk plan:
+- Load uncached file count from `graphify-out/.graphify_uncached.txt`
+- Load planned chunk count from `graphify-out/.graphify_chunk_plan.json`
+- Estimate time as ~45s per batch: `45 * ceil(planned_chunks / parallel_limit)`, where `parallel_limit` is the batch/concurrency limit in Step B2 for the current platform.
+- Print: "Semantic extraction: N files -> C chunks, estimated ~Ys"
+
+**Step B2 - Dispatch subagents in bounded batches (Codex)**
 
 > **Codex platform:** Uses `spawn_agent` + `wait_agent` + `close_agent` instead of the Agent tool.
 > Requires `multi_agent = true` under `[features]` in `~/.codex/config.toml`.
@@ -231,13 +234,21 @@ Semantic mode distinction:
 - **Codex skill:** this skill may use `spawn_agent` for semantic extraction, so it can process docs/papers/images without separate graphify API keys. That is a Codex runtime capability, not a standalone CLI feature.
 - For a local keyless CLI graph, run `graphify extract INPUT_PATH --local-only --no-viz`; use `graphify update INPUT_PATH --no-viz` for existing graphs.
 
-Call `spawn_agent` once per chunk — ALL in the same response so they run in parallel. Build the message by wrapping the extraction prompt in task-delegation framing:
+Load `graphify-out/.graphify_chunk_plan.json` and process it in bounded batches. Default to `CODEX_AGENT_BATCH_SIZE = 6`; lower it if `spawn_agent` reports a thread-limit error. Never try to spawn every chunk at once.
+
+For each batch:
+1. Call `spawn_agent` once per chunk in the batch, in the same response, so only that batch runs in parallel.
+2. If any `spawn_agent` call fails with a thread-limit error, immediately wait/close every worker that was already spawned in that batch, lower the batch size, and retry the failed and remaining chunks. Do not abandon already-started workers without closing them.
+3. After the batch is spawned, collect every result with `wait_agent(handle)` and always call `close_agent(handle)`.
+4. Parse and accumulate the batch results before spawning the next batch.
+
+Build each worker message by wrapping the extraction prompt in task-delegation framing:
 
 ```
 spawn_agent(agent_type="worker", message="Your task is to perform the following. Follow the instructions below exactly.\n\n<agent-instructions>\n[extraction prompt, with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE substituted]\n</agent-instructions>\n\nExecute this now. Output ONLY the structured JSON response.")
 ```
 
-After all agents are dispatched, collect results sequentially in memory:
+For each spawned handle, collect results sequentially in memory before starting the next batch:
 ```
 result = wait_agent(handle); close_agent(handle)   # repeat per handle
 ```

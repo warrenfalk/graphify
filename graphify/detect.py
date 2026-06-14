@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 from enum import Enum
 from pathlib import Path
 
@@ -683,7 +684,7 @@ _VCS_MARKERS = (".git", ".hg", ".svn", "_darcs", ".fossil")
 
 
 def _parse_gitignore_line(raw: str) -> str:
-    """Parse one raw line from a .graphifyignore file per gitignore spec.
+    """Parse one raw line from a gitignore-style file.
 
     - Strip newline chars
     - Strip inline comments (whitespace + # suffix), but only when # is
@@ -719,6 +720,95 @@ def _find_vcs_root(start: Path) -> Path | None:
         current = parent
 
 
+def _read_ignore_file(ignore_file: Path, anchor: Path) -> list[tuple[Path, str]]:
+    """Read one gitignore-style file as (anchor_dir, pattern) pairs."""
+    patterns: list[tuple[Path, str]] = []
+    try:
+        lines = ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return patterns
+    for raw in lines:
+        line = _parse_gitignore_line(raw)
+        if line:
+            patterns.append((anchor, line))
+    return patterns
+
+
+def _git_path(root: Path, *args: str) -> Path | None:
+    """Return a path printed by git, or None when git/config is unavailable."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    path = Path(os.path.expandvars(os.path.expanduser(lines[0])))
+    if not path.is_absolute():
+        path = root / path
+    return path
+
+
+def _git_info_exclude_path(root: Path, vcs_root: Path) -> Path | None:
+    """Resolve .git/info/exclude, including linked worktree .git files."""
+    git_marker = vcs_root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "info" / "exclude"
+    if git_marker.exists():
+        return _git_path(root, "rev-parse", "--git-path", "info/exclude")
+    return None
+
+
+def _git_global_excludes_path(root: Path) -> Path | None:
+    """Return Git's configured user excludes file, or the default XDG path."""
+    configured = _git_path(root, "config", "--path", "--get", "core.excludesFile")
+    if configured is not None:
+        return configured
+
+    xdg_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_home:
+        return Path(xdg_home) / "git" / "ignore"
+
+    home = os.environ.get("HOME")
+    if home:
+        return Path(home) / ".config" / "git" / "ignore"
+
+    try:
+        return Path.home() / ".config" / "git" / "ignore"
+    except RuntimeError:
+        return None
+
+
+def _load_git_excludes(root: Path) -> list[tuple[Path, str]]:
+    """Read Git's repo/user excludes for scans inside a VCS worktree.
+
+    These are lower precedence than per-directory .graphifyignore/.gitignore
+    rules, so callers should prepend these before local ignore files.
+    """
+    root = root.resolve()
+    vcs_root = _find_vcs_root(root)
+    if vcs_root is None:
+        return []
+
+    patterns: list[tuple[Path, str]] = []
+    global_excludes = _git_global_excludes_path(root)
+    if global_excludes is not None:
+        patterns.extend(_read_ignore_file(global_excludes, vcs_root))
+
+    info_exclude = _git_info_exclude_path(root, vcs_root)
+    if info_exclude is not None:
+        patterns.extend(_read_ignore_file(info_exclude, vcs_root))
+    return patterns
+
+
 def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
     """Read .graphifyignore files and return (anchor_dir, pattern) pairs.
 
@@ -750,10 +840,7 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
         if not ignore_file.exists():
             ignore_file = d / ".gitignore"
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
+            patterns.extend(_read_ignore_file(ignore_file, d))
     return patterns
 
 
@@ -982,7 +1069,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     total_words = 0
 
     skipped_sensitive: list[str] = []
-    ignore_patterns = _load_graphifyignore(root)
+    local_ignore_patterns = _load_graphifyignore(root)
+    local_ignore_pattern_count = len(local_ignore_patterns)
+    ignore_patterns = _load_git_excludes(root) + local_ignore_patterns
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
     if extra_excludes:
@@ -1113,7 +1202,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "needs_graph": needs_graph,
         "warning": warning,
         "skipped_sensitive": skipped_sensitive,
-        "graphifyignore_patterns": len(ignore_patterns),
+        "graphifyignore_patterns": local_ignore_pattern_count,
         "scan_root": str(root.resolve()),
     }
 
